@@ -171,8 +171,12 @@
           <select id="exp-cat"><option>ציוד</option><option>תוכנה</option><option>שיווק</option><option>השתלמות</option><option>תחבורה</option><option>אחר</option></select>
         </div>
       </div>
-      <div style="margin-top:10px;display:flex;gap:10px;align-items:flex-end">
+      <div style="margin-top:10px;display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap">
         <div class="form-group" style="margin:0;flex:1"><label>תאריך</label><input type="date" id="exp-date"></div>
+        <div class="form-group" style="margin:0;flex:1">
+          <label>קבלה / חשבונית (אופציונלי)</label>
+          <input type="file" id="exp-receipt" accept="image/*,application/pdf" style="padding:6px 12px;font-size:12px">
+        </div>
         <button class="btn btn-primary" onclick="saveExpense()">+ הוסף</button>
       </div>
     </div>
@@ -494,25 +498,64 @@ async function saveExpense() {
   const desc=document.getElementById('exp-desc').value.trim();
   const amount=document.getElementById('exp-amount').value;
   if(!desc||!amount){alert('נא למלא תיאור וסכום');return;}
+  const fileInput=document.getElementById('exp-receipt');
+  let receipt=null;
+  if(fileInput.files&&fileInput.files[0]) {
+    receipt = await new Promise((resolve,reject)=>{
+      const r=new FileReader();
+      r.onload=e=>resolve({data:e.target.result,name:fileInput.files[0].name,type:fileInput.files[0].type});
+      r.onerror=reject;
+      r.readAsDataURL(fileInput.files[0]);
+    });
+  }
   data.expenses.unshift({id:Date.now(),desc,amount:+amount,
     category:document.getElementById('exp-cat').value,
-    date:document.getElementById('exp-date').value});
+    date:document.getElementById('exp-date').value,
+    receipt});
   await saveToDrive();
   document.getElementById('exp-desc').value='';
   document.getElementById('exp-amount').value='';
+  fileInput.value='';
   renderExpenses();
 }
 function renderExpenses() {
   const c=document.getElementById('expenses-table');
   if(!data.expenses.length){c.innerHTML='<div class="empty">אין הוצאות עדיין</div>';return;}
-  c.innerHTML=`<table><thead><tr><th>תאריך</th><th>תיאור</th><th>קטגוריה</th><th>סכום</th><th></th></tr></thead><tbody>
+  c.innerHTML=`<table><thead><tr><th>תאריך</th><th>תיאור</th><th>קטגוריה</th><th>סכום</th><th>קבלה</th><th></th></tr></thead><tbody>
     ${data.expenses.map(e=>`<tr>
       <td>${fmtDate(e.date)}</td><td>${e.desc}</td>
       <td><span class="badge">${e.category}</span></td>
       <td style="color:#e05;font-weight:700">₪${fmtMoney(e.amount)}</td>
+      <td>${e.receipt
+        ? `<div class="flex-gap">
+            <button class="btn btn-secondary btn-sm" onclick="viewReceipt(${e.id})">👁️ הצג</button>
+            <button class="btn btn-secondary btn-sm" onclick="downloadReceipt(${e.id})">⬇️ הורד</button>
+           </div>`
+        : '<span style="color:#555;font-size:11px">אין</span>'}</td>
       <td><button class="btn btn-danger btn-sm" onclick="deleteExpense(${e.id})">✕</button></td>
     </tr>`).join('')}
   </tbody></table>`;
+}
+
+function viewReceipt(id) {
+  const e=data.expenses.find(e=>e.id===id);
+  if(!e||!e.receipt)return;
+  if(e.receipt.type==='application/pdf') {
+    const w=window.open();
+    w.document.write(`<iframe src="${e.receipt.data}" width="100%" height="100%" style="border:none"></iframe>`);
+  } else {
+    const w=window.open();
+    w.document.write(`<img src="${e.receipt.data}" style="max-width:100%;height:auto">`);
+  }
+}
+
+function downloadReceipt(id) {
+  const e=data.expenses.find(e=>e.id===id);
+  if(!e||!e.receipt)return;
+  const a=document.createElement('a');
+  a.href=e.receipt.data;
+  a.download=e.receipt.name||'receipt';
+  a.click();
 }
 async function deleteExpense(id) {
   if(!confirm('למחוק?'))return;
