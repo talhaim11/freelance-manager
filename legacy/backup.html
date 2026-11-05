@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>גיבוי וביקורת נתונים</title>
+<style>
+  :root { color-scheme: light; }
+  body { font-family: system-ui, 'Segoe UI', Arial, sans-serif; background: #f6f7fb; color: #1b1d29; margin: 0; line-height: 1.6; }
+  main { max-width: 860px; margin: 0 auto; padding: 24px 16px 64px; }
+  h1 { font-size: 22px; margin: 0 0 8px; }
+  h2 { font-size: 17px; margin: 0 0 8px; }
+  .card { background: #fff; border: 1px solid #d9dce8; border-radius: 12px; padding: 16px; margin: 16px 0; }
+  button, a.btn { font: inherit; min-height: 44px; padding: 8px 16px; border-radius: 8px; border: 1px solid #3949ab;
+    background: #3949ab; color: #fff; cursor: pointer; text-decoration: none; display: inline-flex; align-items: center; }
+  button.secondary { background: #fff; color: #3949ab; }
+  button:disabled { opacity: .55; cursor: wait; }
+  :focus-visible { outline: 3px solid #f9a825; outline-offset: 2px; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .ok { color: #1b5e20; } .bad { color: #b71c1c; } .warn { color: #8d5d00; }
+  pre { background: #f0f1f7; padding: 12px; border-radius: 8px; overflow: auto; max-height: 360px; direction: ltr; text-align: left; font-size: 12px; }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; }
+  th, td { border-bottom: 1px solid #e3e5ef; padding: 6px 8px; text-align: right; }
+  .ltr { direction: ltr; unicode-bidi: isolate; }
+</style>
+</head>
+<body>
+<main>
+  <h1>🛟 גיבוי וביקורת נתונים</h1>
+  <p>הדף הזה <strong>קורא בלבד</strong>: הוא לא משנה, לא מוחק ולא דורס שום נתון — לא במכשיר ולא ב-Google Drive. הוא מוריד עותקים מקוריים ודוח ביקורת (manifest).</p>
+  <p><a href="index.html">← חזרה לאפליקציה</a></p>
+
+  <section class="card" aria-labelledby="h-local">
+    <h2 id="h-local">1. נתונים שמורים בדפדפן הזה</h2>
+    <div id="local-summary" role="status" aria-live="polite">בודק…</div>
+    <div class="row" style="margin-top:8px">
+      <button id="btn-local-raw" onclick="downloadLocalRaw()">⬇️ הורד עותק מקורי</button>
+      <button class="secondary" id="btn-local-manifest" onclick="downloadManifest('local')">⬇️ הורד דוח ביקורת</button>
+    </div>
+  </section>
+
+  <section class="card" aria-labelledby="h-snap">
+    <h2 id="h-snap">2. עותקי ביטחון אוטומטיים (IndexedDB)</h2>
+    <p>נוצרים לפני כל מיזוג נתונים, ופעם אחת לפני השימוש הראשון בגרסה המתוקנת.</p>
+    <div id="snap-list" role="status" aria-live="polite">בודק…</div>
+  </section>
+
+  <section class="card" aria-labelledby="h-drive">
+    <h2 id="h-drive">3. הקובץ ב-Google Drive</h2>
+    <p>התחברות לקריאה בלבד של קבצי האפליקציה ב-Drive (אותה הרשאה שהאפליקציה כבר משתמשת בה).</p>
+    <div class="row">
+      <button id="btn-drive" onclick="readDrive()">התחבר וקרא מ-Drive</button>
+    </div>
+    <div id="drive-summary" role="status" aria-live="polite" style="margin-top:8px"></div>
+  </section>
+
+  <section class="card" aria-labelledby="h-compare">
+    <h2 id="h-compare">4. השוואה</h2>
+    <div id="compare">יופיע אחרי קריאת שני המקורות.</div>
+  </section>
+</main>
+
+<script src="legacy-core.js"></script>
+<script src="https://accounts.google.com/gsi/client" async defer></script>
+<script>
+'use strict';
+const Core = window.LegacyCore;
+const esc = Core.esc;
+const sources = {};   // name -> { raw: string|null, data, manifest }
+
+function stamp() { return new Date().toISOString().replace(/[:.]/g, '-'); }
+function download(text, name, type) {
+  const url = URL.createObjectURL(new Blob([text], { type: type || 'application/json' }));
+  const a = document.createElement('a'); a.href = url; a.download = name; a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
+}
+function fmt(n) { return Number(n || 0).toLocaleString('he-IL'); }
+
+function summaryHtml(m) {
+  const years = Object.entries(m.totalsByYear).sort().map(([y, t]) =>
+    `<tr><td>${esc(y)}</td><td>${t.invoiceCount}</td><td>₪${fmt(t.invoices)}</td><td>${t.expenseCount}</td><td>₪${fmt(t.expenses)}</td></tr>`).join('');
+  const issues = [];
+  if (m.numbering.gaps.length) issues.push(`<li class="warn">חסרים מספרי חשבונית: <span class="ltr">${esc(m.numbering.gaps.join(', '))}</span> (ייתכן שנמחקו בגרסה הקודמת)</li>`);
+  if (m.numbering.duplicates.length) issues.push(`<li class="bad">מספרי חשבונית כפולים: <span class="ltr">${esc(m.numbering.duplicates.join(', '))}</span></li>`);
+  if (m.counts.invalidAttachments) issues.push(`<li class="bad">${m.counts.invalidAttachments} קבצים מצורפים פגומים</li>`);
+  if (m.counts.conflicts) issues.push(`<li class="warn">${m.counts.conflicts} התנגשויות שמורות לבדיקה</li>`);
+  return `<ul>
+      <li>חשבוניות: <strong>${m.counts.invoices}</strong> (מתוכן מבוטלות: ${m.counts.invoicesCancelled})</li>
+      <li>הוצאות: <strong>${m.counts.expenses}</strong> (בסל: ${m.counts.expensesDeleted}) · קבצים מצורפים: <strong>${m.counts.attachments}</strong></li>
+      <li>המספר הבא: ${esc(m.nextInvoiceNum)}</li>
+      <li>טביעת אצבע של התוכן: <code class="ltr">${esc(m.contentSha256.slice(0, 16))}…</code></li>
+    </ul>
+    ${years ? `<table><thead><tr><th>שנה</th><th>חשבוניות</th><th>סכום</th><th>הוצאות</th><th>סכום</th></tr></thead><tbody>${years}</tbody></table>` : ''}
+    ${issues.length ? `<ul>${issues.join('')}</ul>` : '<p class="ok">לא נמצאו בעיות מספור או קבצים פגומים.</p>'}`;
+}
+
+async function analyze(name, raw, el) {
+  let data = null;
+  try { data = raw === null ? null : JSON.parse(raw); }
+  catch (e) { el.innerHTML = '<p class="bad">הנתונים קיימים אך אינם JSON תקין. הורידו את העותק המקורי ושמרו אותו.</p>'; sources[name] = { raw, data: null, manifest: null }; return; }
+  const manifest = await Core.buildManifest(data, name);
+  sources[name] = { raw, data, manifest };
+  el.innerHTML = raw === null ? '<p>אין נתונים שמורים בדפדפן הזה.</p>' : summaryHtml(manifest);
+  compare();
+}
+
+async function readLocal() {
+  let raw = null;
+  try { raw = localStorage.getItem('freelance_local'); } catch (e) {}
+  await analyze('local', raw, document.getElementById('local-summary'));
+}
+function downloadLocalRaw() {
+  const s = sources.local;
+  if (!s || s.raw === null) { alert('אין נתונים מקומיים להורדה'); return; }
+  download(s.raw, `freelance-local-original-${stamp()}.json`);
+}
+function downloadManifest(name) {
+  const s = sources[name];
+  if (!s || !s.manifest) { alert('אין דוח זמין'); return; }
+  download(JSON.stringify(s.manifest, null, 2), `freelance-${name}-manifest-${stamp()}.json`);
+}
+
+function listSnapshots() {
+  const el = document.getElementById('snap-list');
+  const req = indexedDB.open('freelance_snapshots', 1);
+  req.onupgradeneeded = () => req.result.createObjectStore('snapshots', { keyPath: 'at' });
+  req.onerror = () => { el.textContent = 'לא ניתן לפתוח את מאגר העותקים.'; };
+  req.onsuccess = () => {
+    const db = req.result;
+    const all = db.transaction('snapshots').objectStore('snapshots').getAll();
+    all.onsuccess = () => {
+      const rows = all.result || [];
+      window.__snapshots = rows;
+      el.innerHTML = rows.length ? `<table><thead><tr><th>מתי</th><th>סוג</th><th></th></tr></thead><tbody>${
+        rows.map((r, i) => `<tr><td class="ltr">${esc(r.at.slice(0, 19).replace('T', ' '))}</td><td>${esc(r.label)}</td>
+          <td><button class="secondary" onclick="downloadSnapshot(${i})">⬇️ הורד</button></td></tr>`).join('')}</tbody></table>`
+        : '<p>אין עותקים עדיין.</p>';
+    };
+  };
+}
+function downloadSnapshot(i) {
+  const r = window.__snapshots[i];
+  const text = typeof r.data === 'string' ? r.data : JSON.stringify(r.data, null, 2);
+  download(text, `freelance-snapshot-${r.label}-${r.at.replace(/[:.]/g, '-')}.json`);
+}
+
+async function readDrive() {
+  const el = document.getElementById('drive-summary');
+  const btn = document.getElementById('btn-drive');
+  let clientId = null;
+  try { clientId = localStorage.getItem('cfg_client_id'); } catch (e) {}
+  if (!clientId) { el.innerHTML = '<p class="warn">לא הוגדר Client ID באפליקציה בדפדפן הזה.</p>'; return; }
+  if (!window.google || !google.accounts) { el.innerHTML = '<p class="bad">שירות ההתחברות של Google לא נטען.</p>'; return; }
+  btn.disabled = true;
+  const client = google.accounts.oauth2.initTokenClient({
+    client_id: clientId, scope: 'https://www.googleapis.com/auth/drive.appdata',
+    callback: async (resp) => {
+      try {
+        if (resp.error) throw new Error('ההתחברות נכשלה');
+        const auth = { Authorization: 'Bearer ' + resp.access_token };
+        const list = await fetch('https://www.googleapis.com/drive/v3/files?spaces=appDataFolder&fields=files(id,name,version,modifiedTime,size)', { headers: auth });
+        if (!list.ok) throw new Error('קריאת רשימת הקבצים נכשלה (קוד ' + list.status + ')');
+        const files = (await list.json()).files || [];
+        if (!files.length) { el.innerHTML = '<p>אין קבצים של האפליקציה ב-Drive.</p>'; return; }
+        let html = `<p>נמצאו ${files.length} קבצים. כולם הורדו כעותקים מקוריים:</p><ul>`;
+        for (const f of files) {
+          const r = await fetch(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(f.id)}?alt=media`, { headers: auth });
+          if (!r.ok) { html += `<li class="bad">${esc(f.name)} — ההורדה נכשלה (קוד ${r.status})</li>`; continue; }
+          const text = await r.text();
+          download(text, `freelance-drive-original-${f.name}-${stamp()}.json`);
+          html += `<li>${esc(f.name)} · עודכן <span class="ltr">${esc(f.modifiedTime)}</span> · ${fmt(text.length)} תווים</li>`;
+          if (f.name === 'freelance_data.json' && !sources.drive) {
+            const box = document.createElement('div');
+            await analyze('drive', text, box);
+            html += `</ul>${box.innerHTML}<div class="row"><button class="secondary" onclick="downloadManifest('drive')">⬇️ הורד דוח ביקורת Drive</button></div><ul>`;
+          }
+        }
+        el.innerHTML = html + '</ul>';
+      } catch (e) {
+        el.innerHTML = `<p class="bad">${esc(e.message)}</p>`;
+      } finally { btn.disabled = false; }
+    }
+  });
+  client.requestAccessToken();
+}
+
+function compare() {
+  const a = sources.local && sources.local.manifest, b = sources.drive && sources.drive.manifest;
+  const el = document.getElementById('compare');
+  if (!a || !b) return;
+  if (a.contentSha256 === b.contentSha256) { el.innerHTML = '<p class="ok">התוכן בדפדפן ובקובץ ה-Drive זהה.</p>'; return; }
+  const onlyLocal = (sources.local.data.invoices || []).filter(i => !(sources.drive.data.invoices || []).some(j => String(j.id) === String(i.id))).length;
+  const onlyDrive = (sources.drive.data.invoices || []).filter(i => !(sources.local.data.invoices || []).some(j => String(j.id) === String(i.id))).length;
+  el.innerHTML = `<p class="warn">התוכן שונה. חשבוניות רק בדפדפן: ${onlyLocal}; רק ב-Drive: ${onlyDrive}.
+    שמרו את שני העותקים המקוריים. האפליקציה המתוקנת ממזגת את שניהם בלי למחוק.</p>`;
+}
+
+readLocal();
+listSnapshots();
+</script>
+</body>
+</html>
