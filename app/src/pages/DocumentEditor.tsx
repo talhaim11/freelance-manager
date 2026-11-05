@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { uuid } from '../lib/uuid';
 import { useRepo } from '../App';
 import { vatStatusOn } from '../domain/classification';
 import {
@@ -63,7 +64,7 @@ function EditorForm(props: {
   const { busy, run } = useBusy();
   const draft = props.draft;
   // One key per editor session: repeated submits create a single draft.
-  const idempotencyKey = useRef(draft?.idempotency_key ?? crypto.randomUUID());
+  const idempotencyKey = useRef(draft?.idempotency_key ?? uuid());
 
   const [issueDate, setIssueDate] = useState(draft?.issue_date ?? todayLocal());
   const vatStatus = vatStatusOn(props.vat, issueDate);
@@ -80,6 +81,13 @@ function EditorForm(props: {
     : [emptyLine()]);
   const [newSeriesStart, setNewSeriesStart] = useState('1');
   const [error, setError] = useState<string | null>(null);
+  // Validation messages appear only after the user leaves a field or tries to save/issue —
+  // never on a fresh, untouched form.
+  const [attempted, setAttempted] = useState(false);
+  const [touched, setTouched] = useState<Record<string, boolean>>({});
+  const touch = (k: string) => () => setTouched((t) => (t[k] ? t : { ...t, [k]: true }));
+  const shown = (k: string) => attempted || !!touched[k];
+  const summaryRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!seriesForType.some((s) => s.id === seriesId)) setSeriesId(seriesForType[0]?.id ?? '');
@@ -90,6 +98,22 @@ function EditorForm(props: {
   const customer = props.customers.find((c) => c.id === customerId) ?? null;
   const problems = issueProblems({ docType, vatStatus, profile: props.profile, customer, lines, payment });
   const lineErrs = lineProblems(lines);
+  const fieldError = (i: number, field: 'd' | 'q' | 'p' | 'x'): string | null => {
+    if (!shown(`${field}${i}`)) return null;
+    const f = lineForms[i];
+    if (field === 'd') return f.description.trim() ? null : 'חסר תיאור';
+    if (field === 'q') { const q = Number(f.quantity.replace(',', '.')); return Number.isFinite(q) && q > 0 ? null : 'הכמות חייבת להיות חיובית'; }
+    if (field === 'p') { if (!f.price.trim()) return 'יש להזין מחיר'; const p = parseShekels(f.price); return p === null || p < 0 ? 'מחיר לא תקין' : null; }
+    if (!f.discount.trim()) return null;
+    const d = parseShekels(f.discount);
+    if (d === null || d < 0) return 'הנחה לא תקינה';
+    return lineErrs.some((x) => x.index === i && x.message === 'ההנחה גדולה מסכום השורה') ? 'ההנחה גדולה מסכום השורה' : null;
+  };
+  const tryIssue = () => {
+    if (problems.length === 0) { void save(true); return; }
+    setAttempted(true);
+    setTimeout(() => summaryRef.current?.focus(), 0);
+  };
 
   const updateLine = (i: number, patch: Partial<LineForm>) => setLineForms((ls) => ls.map((l, j) => (j === i ? { ...l, ...patch } : l)));
 
@@ -106,7 +130,10 @@ function EditorForm(props: {
   const save = (thenIssue: boolean) => run(async () => {
     setError(null);
     if (!seriesId) { setError('יש ליצור סדרת מספור לסוג המסמך'); return; }
-    if (invalid.length) { setError('יש סכומים לא תקינים בשורות'); return; }
+    if (invalid.length) {
+      setTouched((t) => ({ ...t, ...Object.fromEntries(invalid.flatMap((i) => [[`p${i}`, true], [`x${i}`, true], [`q${i}`, true]])) }));
+      setError('יש סכומים לא תקינים בשורות'); return;
+    }
     const input = { series_id: seriesId, doc_type: docType, issue_date: issueDate, customer_id: customerId || null, lines, notes, payment_details: docType === 'receipt' ? payment : {} };
     try {
       let id = draft?.id;
@@ -152,7 +179,8 @@ function EditorForm(props: {
             </div>
           )}
           <Field label="לקוח" hint={props.customers.length ? undefined : 'אין לקוחות עדיין — הוסיפו בעמוד הכנסות ולקוחות.'}
-            error={problems.includes('CUSTOMER_ADDRESS_REQUIRED') ? ERROR_MESSAGES.CUSTOMER_ADDRESS_REQUIRED : null}>
+            error={problems.includes('CUSTOMER_ADDRESS_REQUIRED') ? ERROR_MESSAGES.CUSTOMER_ADDRESS_REQUIRED
+              : attempted && problems.includes('CUSTOMER_REQUIRED') ? ERROR_MESSAGES.CUSTOMER_REQUIRED : null}>
             {(a) => (
               <select {...a} value={customerId} onChange={(e) => setCustomerId(e.target.value)}>
                 <option value="">בחירת לקוח…</option>
@@ -167,16 +195,14 @@ function EditorForm(props: {
       <section className="card" aria-labelledby="lines-h">
         <h2 id="lines-h">שורות</h2>
         {lineForms.map((l, i) => {
-          const errs = lineErrs.filter((x) => x.index === i).map((x) => x.message);
-          if (invalid.includes(i)) errs.unshift('סכום לא תקין');
           return (
             <div className="line-row" key={i}>
-              <Field label={`תיאור (שורה ${i + 1})`} error={errs.length ? errs.join(' · ') : null}>
-                {(a) => <input {...a} value={l.description} onChange={(e) => updateLine(i, { description: e.target.value })} />}
+              <Field label={`תיאור (שורה ${i + 1})`} error={fieldError(i, 'd')}>
+                {(a) => <input {...a} value={l.description} onBlur={touch(`d${i}`)} onChange={(e) => updateLine(i, { description: e.target.value })} />}
               </Field>
-              <Field label="כמות">{(a) => <input {...a} inputMode="decimal" value={l.quantity} onChange={(e) => updateLine(i, { quantity: e.target.value })} />}</Field>
-              <Field label="מחיר ליחידה (₪)">{(a) => <input {...a} inputMode="decimal" dir="ltr" value={l.price} onChange={(e) => updateLine(i, { price: e.target.value })} />}</Field>
-              <Field label="הנחה (₪)">{(a) => <input {...a} inputMode="decimal" dir="ltr" value={l.discount} onChange={(e) => updateLine(i, { discount: e.target.value })} />}</Field>
+              <Field label="כמות" error={fieldError(i, 'q')}>{(a) => <input {...a} inputMode="decimal" value={l.quantity} onBlur={touch(`q${i}`)} onChange={(e) => updateLine(i, { quantity: e.target.value })} />}</Field>
+              <Field label="מחיר ליחידה (₪)" error={fieldError(i, 'p')}>{(a) => <input {...a} inputMode="decimal" dir="ltr" value={l.price} onBlur={touch(`p${i}`)} onChange={(e) => updateLine(i, { price: e.target.value })} />}</Field>
+              <Field label="הנחה (₪)" error={fieldError(i, 'x')}>{(a) => <input {...a} inputMode="decimal" dir="ltr" value={l.discount} onBlur={touch(`x${i}`)} onChange={(e) => updateLine(i, { discount: e.target.value })} />}</Field>
               <button type="button" className="btn btn-danger" aria-label={`הסרת שורה ${i + 1}`} disabled={lineForms.length === 1}
                 onClick={() => setLineForms((ls) => ls.filter((_, j) => j !== i))}>הסרה</button>
             </div>
@@ -190,9 +216,9 @@ function EditorForm(props: {
         <section className="card" aria-labelledby="pay-h">
           <h2 id="pay-h">פרטי התשלום</h2>
           <div className="grid grid-2">
-            <Field label="אמצעי תשלום" error={problems.includes('PAYMENT_METHOD_REQUIRED') ? 'חובה בקבלה' : null}>
+            <Field label="אמצעי תשלום" error={shown('pay') && problems.includes('PAYMENT_METHOD_REQUIRED') ? 'חובה בקבלה' : null}>
               {(a) => (
-                <select {...a} value={payment.method ?? ''} onChange={(e) => setPayment({ ...payment, method: (e.target.value || undefined) as PaymentMethod | undefined })}>
+                <select {...a} value={payment.method ?? ''} onBlur={touch('pay')} onChange={(e) => setPayment({ ...payment, method: (e.target.value || undefined) as PaymentMethod | undefined })}>
                   <option value="">בחירה…</option>
                   {Object.entries(PAYMENT_METHOD_LABEL).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
                 </select>
@@ -213,16 +239,19 @@ function EditorForm(props: {
         <Field label="הערות">{(a) => <textarea {...a} value={notes} onChange={(e) => setNotes(e.target.value)} />}</Field>
       </section>
 
-      {problems.length > 0 && (
-        <div className="notice notice-warning" role="status">
-          <p>לפני הפקה יש להשלים:</p>
+      {problems.includes('PROFILE_INCOMPLETE') && !attempted && (
+        <div className="notice notice-info">כדי להפיק מסמכים צריך קודם להשלים את פרטי העסק ב<a href="#/settings">הגדרות</a>. אפשר לשמור טיוטה כבר עכשיו.</div>
+      )}
+      {attempted && problems.length > 0 && (
+        <div className="notice notice-error" role="alert" tabIndex={-1} ref={summaryRef}>
+          <p>אי אפשר עדיין להפיק. יש להשלים:</p>
           <ul>{problems.map((p) => <li key={p}>{ERROR_MESSAGES[p] ?? p}</li>)}</ul>
         </div>
       )}
       {error && <div className="notice notice-error" role="alert">{error}</div>}
       <div className="btn-row">
         <button className="btn btn-secondary" type="submit" disabled={busy}>{busy ? 'שומר…' : 'שמירת טיוטה'}</button>
-        <button className="btn" type="button" disabled={busy || problems.length > 0} onClick={() => void save(true)}>שמירה והמשך להפקה</button>
+        <button className="btn" type="button" disabled={busy} onClick={tryIssue}>שמירה והמשך להפקה</button>
       </div>
     </form>
   );

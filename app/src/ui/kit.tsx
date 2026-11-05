@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import { formatILS } from '../domain/money';
+import { errorCode, errorMessage } from '../domain/errors';
 
 /** Labeled form field with hint and error wired to aria-describedby. */
 export function Field(props: {
@@ -43,9 +44,28 @@ export function Dialog(props: { open: boolean; title: string; onClose: () => voi
   );
 }
 
-export type AsyncState<T> = { status: 'loading' } | { status: 'error'; message: string } | { status: 'ready'; data: T };
+export type AsyncState<T> = { status: 'loading' } | { status: 'error'; message: string; code: string } | { status: 'ready'; data: T };
 
-/** Loads data with explicit loading / error+retry states. */
+/** Fired after signing in again, so pages that failed to load retry. */
+export const RECONNECTED_EVENT = 'fm:reconnected';
+
+/** navigator.onLine with live updates. */
+export function useOnline(): boolean {
+  const [online, setOnline] = useState(() => (typeof navigator === 'undefined' ? true : navigator.onLine));
+  useEffect(() => {
+    const on = () => setOnline(true);
+    const off = () => setOnline(false);
+    window.addEventListener('online', on);
+    window.addEventListener('offline', off);
+    return () => { window.removeEventListener('online', on); window.removeEventListener('offline', off); };
+  }, []);
+  return online;
+}
+
+/**
+ * Loads data with explicit loading / error+retry states. A failed load is retried
+ * automatically when the connection comes back (reads only; writes are never replayed).
+ */
 export function useAsync<T>(fn: () => Promise<T>, deps: unknown[]): [AsyncState<T>, () => void] {
   const [state, setState] = useState<AsyncState<T>>({ status: 'loading' });
   const [tick, setTick] = useState(0);
@@ -54,11 +74,19 @@ export function useAsync<T>(fn: () => Promise<T>, deps: unknown[]): [AsyncState<
     setState({ status: 'loading' });
     fn().then(
       (data) => alive && setState({ status: 'ready', data }),
-      (e) => alive && setState({ status: 'error', message: e instanceof Error ? e.message : String(e) }),
+      (e) => alive && setState({ status: 'error', message: errorMessage(e), code: errorCode(e) }),
     );
     return () => { alive = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [...deps, tick]);
+  const failed = state.status === 'error';
+  useEffect(() => {
+    if (!failed) return;
+    const on = () => setTick((t) => t + 1);
+    window.addEventListener('online', on);
+    window.addEventListener(RECONNECTED_EVENT, on);
+    return () => { window.removeEventListener('online', on); window.removeEventListener(RECONNECTED_EVENT, on); };
+  }, [failed]);
   return [state, () => setTick((t) => t + 1)];
 }
 
@@ -68,6 +96,7 @@ export function DataState<T>(props: { state: AsyncState<T>; retry: () => void; c
     return (
       <div className="notice notice-error" role="alert">
         <p>הטעינה נכשלה. לא נעשה שום שינוי בנתונים.</p>
+        <p>{props.state.message}</p>
         <button className="btn btn-secondary" onClick={props.retry}>נסה שוב</button>
       </div>
     );

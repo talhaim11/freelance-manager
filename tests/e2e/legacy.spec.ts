@@ -1,7 +1,7 @@
 import { test, expect, type Page } from '@playwright/test';
 import { FakeDrive } from './fake-google';
 
-const LEGACY = 'http://localhost:4173/';
+const LEGACY = `http://localhost:${process.env.FM_E2E_LEGACY_PORT ?? 4173}/`;
 
 async function open(page: Page, drive: FakeDrive) {
   await drive.install(page);

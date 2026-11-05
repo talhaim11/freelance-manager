@@ -145,3 +145,10 @@ dialog::backdrop { background: rgb(0 0 0 / .5); }
 
 /* WCAG 2.2 target size (≥24px) for links in lists */
 li > a { display: inline-block; min-height: 24px; padding-block: 2px; }
+
+/* Where data goes: demo (this browser only) / cloud / offline. Always visible in the top bar. */
+.mode-badge { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 999px; font-size: .85rem; font-weight: 700; border: 1px solid currentColor; }
+.mode-cloud { background: var(--success-soft); color: var(--success); }
+.mode-demo { background: var(--warning-soft); color: var(--warning); }
+.mode-offline { background: var(--danger-soft); color: var(--danger); }
+@media (max-width: 599px) { .account-label { display: none; } }

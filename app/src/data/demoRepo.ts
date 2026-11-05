@@ -20,7 +20,7 @@ interface DemoState {
   audit: { action: string; entity_id: string; at: string; details: unknown }[];
 }
 
-const uuid = () => crypto.randomUUID();
+import { uuid } from '../lib/uuid';
 const today = () => {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;

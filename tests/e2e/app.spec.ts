@@ -1,7 +1,7 @@
 import { test, expect, type Page } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
 
-const APP = 'http://localhost:5173/';
+const APP = `http://localhost:${process.env.FM_E2E_PORT ?? 5173}/`;
 
 async function openDemo(page: Page) {
   await page.goto(APP);
@@ -25,6 +25,8 @@ test('starts without a backend only in clearly labelled demo mode, RTL Hebrew', 
   await openDemo(page);
   await expect(page.locator('html')).toHaveAttribute('dir', 'rtl');
   await expect(page.locator('html')).toHaveAttribute('lang', 'he');
+  await expect(page.getByTestId('mode-badge')).toHaveText('מצב דמו · מקומי בלבד');
+  await expect(page).toHaveTitle(/\[דמו\]/);
   await expect(page.getByRole('navigation', { name: 'ניווט ראשי' })).toBeVisible();
   for (const label of ['בית', 'הכנסות ולקוחות', 'הוצאות', 'מסים ודוחות', 'מסמכים', 'עוזר', 'הגדרות']) {
     await expect(page.getByRole('navigation', { name: 'ניווט ראשי' }).getByRole('link', { name: label })).toBeVisible();
@@ -93,7 +95,11 @@ test('a receipt requires a payment method before it can be issued', async ({ pag
   await page.getByLabel('לקוח').selectOption({ label: 'לקוח לדוגמה בע"מ' });
   await page.getByLabel('תיאור (שורה 1)').fill('תשלום');
   await page.getByLabel('מחיר ליחידה (₪)').fill('100');
-  await expect(page.getByRole('button', { name: 'שמירה והמשך להפקה' })).toBeDisabled();
+  await page.getByRole('button', { name: 'שמירה והמשך להפקה' }).click();
+  const summary = page.getByRole('alert').filter({ hasText: 'אי אפשר עדיין להפיק' });
+  await expect(summary).toContainText('בקבלה חובה לציין את אמצעי התשלום');
+  await expect(summary).toBeFocused();
+  await expect(page.getByRole('dialog', { name: 'להפיק את המסמך?' })).toHaveCount(0);
   await page.getByLabel('אמצעי תשלום').selectOption({ label: 'העברה בנקאית' });
   await page.getByRole('button', { name: 'שמירה והמשך להפקה' }).click();
   await page.getByRole('button', { name: 'כן, להפיק' }).click();
@@ -101,6 +107,32 @@ test('a receipt requires a payment method before it can be issued', async ({ pag
   await expect(page.getByRole('article')).toContainText('העברה בנקאית');
   await page.goto(APP + '#/');
   await expect(page.getByText('התקבל בפועל (לפי קבלות)').locator('..')).toContainText(/100\.00\s*\S?₪/);
+});
+
+test('a fresh form shows no validation errors; errors appear after leaving a field or trying to issue', async ({ page }) => {
+  await openDemo(page);
+  await page.goto(APP + '#/documents/new');
+  await expect(page.getByLabel('תיאור (שורה 1)')).toBeVisible();
+  await expect(page.locator('.field .error')).toHaveCount(0);
+  await expect(page.getByRole('alert')).toHaveCount(0);
+  await expect(page.locator('[aria-invalid="true"]')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'שמירה והמשך להפקה' })).toBeEnabled();
+
+  // Leaving an empty field marks only that field.
+  await page.getByLabel('תיאור (שורה 1)').focus();
+  await page.getByLabel('תיאור (שורה 1)').blur();
+  await expect(page.getByText('חסר תיאור')).toBeVisible();
+  await expect(page.getByLabel('תיאור (שורה 1)')).toHaveAttribute('aria-invalid', 'true');
+  await expect(page.getByText('יש להזין מחיר')).toHaveCount(0);
+  await page.getByLabel('תיאור (שורה 1)').fill('ייעוץ');
+  await expect(page.getByText('חסר תיאור')).toHaveCount(0);
+
+  // Trying to issue reveals everything that is still missing, in one focused summary.
+  await page.getByRole('button', { name: 'שמירה והמשך להפקה' }).click();
+  const summary = page.getByRole('alert').filter({ hasText: 'אי אפשר עדיין להפיק' });
+  await expect(summary).toBeFocused();
+  await expect(summary).toContainText('יש לבחור לקוח');
+  await expect(page.getByText('יש להזין מחיר')).toBeVisible();
 });
 
 test('tax estimate stays incomplete until material inputs are given, then is labelled partial', async ({ page }) => {

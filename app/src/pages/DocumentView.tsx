@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { uuid } from '../lib/uuid';
 import { useRepo } from '../App';
 import { DOC_TYPE_LABEL, exemptTotals, lineTotal, PAYMENT_METHOD_LABEL } from '../domain/documents';
 import { errorCode, errorMessage } from '../domain/errors';
@@ -37,7 +38,7 @@ function View({ doc, related, profile, customers, reload, autoIssue }: {
   const [reason, setReason] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [unknownOutcome, setUnknownOutcome] = useState(false);
-  const cancelKey = useRef(crypto.randomUUID());
+  const cancelKey = useRef(uuid());
 
   useEffect(() => { if (autoIssue && doc.status === 'draft') setConfirmIssue(true); }, [autoIssue, doc.status]);
 
@@ -51,7 +52,8 @@ function View({ doc, related, profile, customers, reload, autoIssue }: {
       reload();
     } catch (e) {
       // Network failure: the server may or may not have issued it. Retrying is safe (idempotent).
-      if (errorCode(e) === 'NETWORK') setUnknownOutcome(true);
+      // Close the dialog so the explanation and the retry button on the page are reachable.
+      if (errorCode(e) === 'NETWORK') { setUnknownOutcome(true); setConfirmIssue(false); }
       setError(errorMessage(e));
     }
   });
@@ -85,7 +87,7 @@ function View({ doc, related, profile, customers, reload, autoIssue }: {
         {doc.doc_type === 'cancellation' && related && (
           <div className="notice notice-info">מסמך זה מבטל את <a href={`#/documents/${related.id}`}>{DOC_TYPE_LABEL[related.doc_type]} מספר {related.number}</a>.</div>
         )}
-        {error && (
+        {error && !confirmIssue && !confirmCancel && (
           <div className="notice notice-error" role="alert">
             <p>{error}</p>
             {unknownOutcome && <p>ייתכן שהמסמך כבר הופק. לחיצה על "נסה שוב" בטוחה — לא ייווצר מסמך כפול.</p>}
@@ -95,13 +97,13 @@ function View({ doc, related, profile, customers, reload, autoIssue }: {
         )}
         <div className="btn-row" style={{ marginBottom: 16 }}>
           {isDraft && <>
-            <button className="btn" onClick={() => setConfirmIssue(true)} disabled={busy}>הפקת מסמך</button>
+            <button className="btn" onClick={() => { setError(null); setUnknownOutcome(false); setConfirmIssue(true); }} disabled={busy}>הפקת מסמך</button>
             <a className="btn btn-secondary" href={`#/documents/${doc.id}/edit`}>עריכה</a>
             <button className="btn btn-danger" onClick={() => void removeDraft()} disabled={busy}>מחיקת טיוטה</button>
           </>}
           {!isDraft && <button className="btn btn-secondary" onClick={() => window.print()}>הדפסה / שמירה כ-PDF</button>}
           {doc.status === 'issued' && doc.doc_type !== 'cancellation' &&
-            <button className="btn btn-danger" onClick={() => setConfirmCancel(true)}>ביטול באמצעות מסמך ביטול</button>}
+            <button className="btn btn-danger" onClick={() => { setError(null); setConfirmCancel(true); }}>ביטול באמצעות מסמך ביטול</button>}
           <a className="btn btn-secondary" href="#/documents">חזרה לרשימה</a>
         </div>
       </div>
@@ -110,6 +112,7 @@ function View({ doc, related, profile, customers, reload, autoIssue }: {
 
       <Dialog open={confirmIssue} title="להפיק את המסמך?" onClose={() => setConfirmIssue(false)}>
         <p>לאחר ההפקה יוקצה מספר רץ, והמסמך לא יהיה ניתן לעריכה או למחיקה. תיקון ייעשה רק במסמך ביטול.</p>
+        {error && !unknownOutcome && <p className="notice notice-error" role="alert">{error}</p>}
         <div className="btn-row">
           <button className="btn" onClick={() => void issue()} disabled={busy}>{busy ? 'מפיק…' : 'כן, להפיק'}</button>
           <button className="btn btn-secondary" onClick={() => setConfirmIssue(false)} disabled={busy}>חזרה</button>
@@ -119,6 +122,7 @@ function View({ doc, related, profile, customers, reload, autoIssue }: {
       <Dialog open={confirmCancel} title="ביטול מסמך" onClose={() => setConfirmCancel(false)}>
         <p>יופק מסמך ביטול חדש עם מספר משלו, שמפנה למסמך המקורי. המסמך המקורי יישמר כפי שהוא ויסומן כמבוטל.</p>
         <Field label="סיבת הביטול (חובה)">{(a) => <input {...a} value={reason} onChange={(e) => setReason(e.target.value)} />}</Field>
+        {error && <p className="notice notice-error" role="alert">{error}</p>}
         <p className="muted">שימו לב: אם המסמך כבר נמסר ללקוח, ייתכן שנדרש למסור לו גם את מסמך הביטול. מומלץ לאמת את הנוהל עם רו"ח.</p>
         <div className="btn-row">
           <button className="btn btn-danger" onClick={() => void cancel()} disabled={busy}>{busy ? 'מבטל…' : 'הפקת מסמך ביטול'}</button>

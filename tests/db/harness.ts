@@ -27,7 +27,8 @@ export const newUser = (email: string): TestUser => ({ id: randomUUID(), email }
 export class TestDb {
   private server!: EmbeddedPostgres;
   private dir!: string;
-  readonly port = 54000 + Math.floor(Math.random() * 900);
+  // Outside 54321-54327, which the local Supabase stack uses.
+  readonly port = 55100 + Math.floor(Math.random() * 800);
   admin!: pg.Pool;
 
   async start() {

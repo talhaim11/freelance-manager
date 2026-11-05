@@ -1,11 +1,11 @@
 import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type { Session } from '@supabase/supabase-js';
-import { backendConfigured, supabase } from './data/backend';
+import { backendConfigured, backendLabel, backendState, supabase } from './data/backend';
 import { DemoRepo } from './data/demoRepo';
 import { SupabaseRepo } from './data/supabaseRepo';
 import type { Repo } from './data/types';
 import { useRoute } from './router';
-import { ToastProvider } from './ui/kit';
+import { RECONNECTED_EVENT, useOnline, useToast } from './ui/kit';
 import { HomePage } from './pages/Home';
 import { IncomePage } from './pages/Income';
 import { ExpensesPlaceholder as ExpensesPage, AssistantPlaceholder as AssistantPage } from './pages/Simple';
@@ -14,7 +14,7 @@ import { DocumentsPage } from './pages/Documents';
 import { DocumentEditor } from './pages/DocumentEditor';
 import { DocumentView } from './pages/DocumentView';
 import { SettingsPage } from './pages/Settings';
-import { LoginPage, SetupPage, NotAllowedPage } from './pages/Access';
+import { ConnectionErrorPage, LoginPage, NotAllowedPage, ReauthDialog, SetupPage } from './pages/Access';
 
 const RepoCtx = createContext<Repo | null>(null);
 export function useRepo(): Repo {
@@ -71,7 +71,16 @@ function Page({ route }: { route: string }) {
   return <div className="card"><h1>הדף לא נמצא</h1><a href="#/">חזרה לבית</a></div>;
 }
 
-function Shell({ repo, onExit, accountLabel, children }: { repo: Repo; onExit: () => void; accountLabel: string; children?: ReactNode }) {
+/** Always-visible indicator of where data is going: demo (this browser only), cloud, or offline. */
+function ModeBadge({ mode }: { mode: Repo['mode'] }) {
+  const online = useOnline();
+  if (mode === 'demo') return <span className="mode-badge mode-demo" data-testid="mode-badge">מצב דמו · מקומי בלבד</span>;
+  return online
+    ? <span className="mode-badge mode-cloud" data-testid="mode-badge" title="הנתונים נשמרים בשרת ומשותפים למחשב ולטלפון">☁ מחובר לענן · {backendLabel()}</span>
+    : <span className="mode-badge mode-offline" data-testid="mode-badge" role="status">אין חיבור לרשת · שינויים לא יישמרו עד שהחיבור יחזור</span>;
+}
+
+function Shell({ repo, onExit, accountLabel, overlay }: { repo: Repo; onExit: () => void; accountLabel: string; overlay?: ReactNode }) {
   const route = useRoute();
   const path = route.split('?')[0];
   const lastPath = useRef(path);
@@ -81,12 +90,13 @@ function Shell({ repo, onExit, accountLabel, children }: { repo: Repo; onExit: (
     lastPath.current = path;
     document.getElementById('main')?.focus();
   }, [path]);
+  useEffect(() => { document.title = repo.mode === 'demo' ? '[דמו] ניהול עסק עצמאי' : 'ניהול עסק עצמאי'; }, [repo.mode]);
   return (
     <RepoCtx.Provider value={repo}>
       <a className="skip-link" href="#main" onClick={(e) => { e.preventDefault(); document.getElementById('main')?.focus(); }}>דלג לתוכן</a>
       {repo.mode === 'demo' && (
         <div className="demo-banner" role="note">
-          מצב דמו — נתונים סינתטיים שנשמרים רק בדפדפן הזה. אינם רשומות עסקיות אמיתיות ואינם מסונכרנים.
+          מצב דמו — נתונים סינתטיים שנשמרים רק בדפדפן הזה. אינם רשומות עסקיות אמיתיות, אינם מסונכרנים ואינם מועלים לחשבון.
         </div>
       )}
       <div className="shell">
@@ -97,61 +107,102 @@ function Shell({ repo, onExit, accountLabel, children }: { repo: Repo; onExit: (
         <div>
           <header className="topbar">
             <span className="brand">ניהול עסק עצמאי</span>
+            <ModeBadge mode={repo.mode} />
             <span className="spacer" />
-            <span className="muted">{accountLabel}</span>
+            <span className="muted account-label">{accountLabel}</span>
             <button className="btn btn-secondary" onClick={onExit}>{repo.mode === 'demo' ? 'יציאה ממצב דמו' : 'התנתקות'}</button>
           </header>
           <main id="main" className="content" tabIndex={-1}>
-            {children ?? <Page route={route} />}
+            <Page route={route} />
           </main>
         </div>
         <nav className="bottom-nav" aria-label="ניווט ראשי (נייד)">
           <NavList route={route} compact />
         </nav>
       </div>
+      {overlay}
     </RepoCtx.Provider>
   );
 }
 
+type Account = { id: string; email: string };
+type Access = 'checking' | 'allowed' | 'not_allowed' | 'error';
+
 export function App() {
+  const toast = useToast();
   const [demo, setDemo] = useState(() => { try { return localStorage.getItem(DEMO_FLAG) === '1'; } catch { return false; } });
   const [session, setSession] = useState<Session | null | undefined>(backendConfigured ? undefined : null);
-  const [allowed, setAllowed] = useState<boolean | undefined>(undefined);
+  const [access, setAccess] = useState<Access>('checking');
+  const [accessTick, setAccessTick] = useState(0);
+  // The verified account whose data is on screen. It survives a lost session, so
+  // unsaved work stays on screen while the user signs in again.
+  const [account, setAccount] = useState<Account | null>(null);
+  const [forceReauth, setForceReauth] = useState(false);
 
   useEffect(() => {
-    if (!backendConfigured) return;
+    if (!backendConfigured || demo) return;
     const sb = supabase();
-    sb.auth.getSession().then(({ data }) => setSession(data.session));
-    const { data: sub } = sb.auth.onAuthStateChange((_e, s) => setSession(s));
+    sb.auth.getSession().then(({ data }) => setSession(data.session), () => setSession(null));
+    const { data: sub } = sb.auth.onAuthStateChange((_event, s) => setSession(s));
     return () => sub.subscription.unsubscribe();
-  }, []);
+  }, [demo]);
 
+  const userId = session?.user.id;
   useEffect(() => {
-    if (!session) { setAllowed(undefined); return; }
-    supabase().rpc('am_i_allowed').then(({ data, error }) => setAllowed(error ? false : Boolean(data)));
-  }, [session]);
+    if (!userId || demo) return;
+    if (account?.id === userId) return; // already verified (token refresh or re-login as the same user)
+    if (account && account.id !== userId) { window.location.reload(); return; } // never mix two accounts' data on screen
+    let alive = true;
+    setAccess('checking');
+    supabase().rpc('am_i_allowed').then(({ data, error, status }) => {
+      if (!alive) return;
+      if (error) { setAccess(status === 403 || status === 404 ? 'not_allowed' : 'error'); return; }
+      if (data === true) { setAccount({ id: userId, email: session?.user.email ?? '' }); setAccess('allowed'); }
+      else setAccess('not_allowed');
+    });
+    return () => { alive = false; };
+  }, [userId, demo, accessTick]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Depends on the account id only: a token refresh must not reset pages or unsaved forms.
+  const accountId = account?.id;
   const repo = useMemo<Repo | null>(() => {
     if (demo) return new DemoRepo();
-    if (session && allowed) return new SupabaseRepo(supabase());
+    if (accountId) return new SupabaseRepo(supabase(), () => setForceReauth(true));
     return null;
-  }, [demo, session, allowed]);
+  }, [demo, accountId]);
 
   const startDemo = () => { try { localStorage.setItem(DEMO_FLAG, '1'); } catch { /* ignore */ } setDemo(true); };
-  const exitDemo = () => { try { localStorage.removeItem(DEMO_FLAG); } catch { /* ignore */ } setDemo(false); window.location.hash = '/'; };
-  const signOut = async () => { await supabase().auth.signOut(); window.location.hash = '/'; };
+  const exitDemo = () => { try { localStorage.removeItem(DEMO_FLAG); } catch { /* ignore */ } window.location.hash = '/'; window.location.reload(); };
+  const signOut = async () => {
+    setAccount(null); setForceReauth(false); setAccess('checking');
+    try { await supabase().auth.signOut({ scope: 'local' }); } catch { /* handled below */ }
+    // Signing out must work offline too: if the request failed, drop the stored session anyway.
+    const { data } = await supabase().auth.getSession().catch(() => ({ data: { session: null } }));
+    if (data.session) {
+      try { Object.keys(localStorage).filter((k) => /^sb-.*-auth-token/.test(k)).forEach((k) => localStorage.removeItem(k)); } catch { /* ignore */ }
+      window.location.hash = '/';
+      window.location.reload();
+      return;
+    }
+    window.location.hash = '/';
+  };
 
-  let body: ReactNode;
+  const needReauth = !demo && !!account && (session === null || forceReauth);
+
   if (repo) {
-    body = <Shell repo={repo} onExit={demo ? exitDemo : signOut} accountLabel={demo ? 'דמו' : session?.user.email ?? ''} />;
-  } else if (!backendConfigured) {
-    body = <SetupPage onDemo={startDemo} />;
-  } else if (session === undefined || (session && allowed === undefined)) {
-    body = <p role="status" style={{ padding: 24 }}>טוען…</p>;
-  } else if (!session) {
-    body = <LoginPage onDemo={startDemo} />;
-  } else {
-    body = <NotAllowedPage email={session.user.email ?? ''} onSignOut={signOut} />;
+    return (
+      <Shell repo={repo} onExit={demo ? exitDemo : () => void signOut()} accountLabel={demo ? 'דמו' : account?.email ?? ''}
+        overlay={needReauth ? (
+          <ReauthDialog email={account!.email}
+            onDone={() => { setForceReauth(false); window.dispatchEvent(new Event(RECONNECTED_EVENT)); toast('התחברת מחדש. אפשר לנסות שוב את הפעולה.', 'success'); }}
+            onSignOut={() => void signOut()} />
+        ) : null} />
+    );
   }
-  return <ToastProvider>{body}</ToastProvider>;
+  if (backendState.kind === 'invalid') return <SetupPage onDemo={startDemo} problem={backendState.reason} />;
+  if (!backendConfigured) return <SetupPage onDemo={startDemo} />;
+  if (session === undefined || (session && access === 'checking')) return <p role="status" style={{ padding: 24 }}>טוען…</p>;
+  if (!session) return <LoginPage onDemo={startDemo} />;
+  if (access === 'error') return <ConnectionErrorPage onRetry={() => setAccessTick((t) => t + 1)} onSignOut={() => void signOut()} />;
+  return <NotAllowedPage email={session.user.email ?? ''} onSignOut={() => void signOut()} />;
 }

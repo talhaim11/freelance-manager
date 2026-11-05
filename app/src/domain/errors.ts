@@ -20,6 +20,8 @@ export const ERROR_MESSAGES: Record<string, string> = {
   CANNOT_CANCEL_CANCELLATION: 'לא ניתן לבטל מסמך ביטול.',
   IDEMPOTENCY_KEY_REUSED: 'בקשה כפולה לא תקינה. רעננו את הדף ונסו שוב.',
   SERIES_NUMBER_LOCKED: 'מספור סדרה מתקדם רק בהפקת מסמך.',
+  SESSION_EXPIRED: 'החיבור לחשבון פג. התחברו מחדש — הפעולה לא בוצעה.',
+  DUPLICATE: 'רשומה כזו כבר קיימת (למשל סדרה באותו שם).',
   NETWORK: 'אין תקשורת עם השרת. הפעולה לא בוצעה או שתוצאתה לא ידועה — בדקו ונסו שוב.',
 };
 
@@ -42,4 +44,16 @@ export function errorCode(e: unknown): string {
 export function errorMessage(e: unknown): string {
   const code = errorCode(e);
   return ERROR_MESSAGES[code] ?? 'אירעה שגיאה לא צפויה. הפעולה לא הושלמה.';
+}
+
+/** Maps Supabase Auth errors to Hebrew without revealing whether an account exists. */
+export function authErrorMessage(e: { message?: string; status?: number; name?: string } | null): string {
+  if (!e) return '';
+  const m = e.message ?? '';
+  if (e.name === 'AuthRetryableFetchError' || /fetch|network|load failed/i.test(m) || e.status === 0) {
+    return 'אין תקשורת עם השרת. בדקו את החיבור לאינטרנט ונסו שוב.';
+  }
+  if (e.status === 429 || /rate limit|too many/i.test(m)) return 'יותר מדי ניסיונות. המתינו כמה דקות ונסו שוב.';
+  if (/invalid login credentials|invalid_credentials/i.test(m) || e.status === 400) return 'הדוא״ל או הסיסמה שגויים.';
+  return 'הכניסה נכשלה. נסו שוב.';
 }
