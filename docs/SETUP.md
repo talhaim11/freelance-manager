@@ -62,6 +62,8 @@ npm run build && npm run check:secrets
 
 ### 3.3 צעדי ההקמה (מפורטים, צעד-צעד, בצ'אט)
 1. פרויקט חדש: אזור **Central EU (Frankfurt)**, סיסמת DB חזקה במנהל סיסמאות.
+   כל אזור באירופה מתאים (גם West EU / Ireland). מומלץ להשאיר **לא מסומן** את "Automatically expose new tables":
+   המיגרציה נותנת הרשאות במפורש (GRANT) ומפעילה RLS על כל הטבלאות, ונבדקה גם במצב הזה.
 2. **SQL Editor** → הדבקת כל `supabase/migrations/20261105000000_m1_foundation.sql` → Run.
 3. **Authentication → Sign In / Providers**: לכבות את **Allow new users to sign up**.
    ⚠️ **לא** לכבות את ספק ה-Email עצמו — זה חוסם גם כניסה. (בבדיקות מקומיות זו בדיוק הטעות שנתפסה.)
