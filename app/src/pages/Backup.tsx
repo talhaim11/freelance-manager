@@ -1,12 +1,12 @@
 import { useState } from 'react';
 import { useRepo } from '../App';
-import { buildZip, exportAll, importLegacy, readZip, restoreBackup, type ExportResult } from '../data/backup';
+import type { ExportResult } from '../data/backup';
 import { manifestOf, planLegacyImport, type BackupPayload, type LegacyPlan } from '../domain/backup';
 import { errorMessage } from '../domain/errors';
-import { downloadBytes } from '../lib/documentPdf';
 import { uuid } from '../lib/uuid';
 import { Money, useBusy, useToast } from '../ui/kit';
 
+const backupLib = () => import('../data/backup');
 const stamp = () => new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-');
 
 /** Backup (complete ZIP), verified restore into an empty account, and import from the previous app. */
@@ -23,6 +23,8 @@ export function BackupPanel() {
   const doExport = () => run(async () => {
     setError(null);
     try {
+      const { exportAll, buildZip } = await backupLib();
+      const { downloadBytes } = await import('../lib/documentPdf');
       const r = await exportAll(repo);
       const zip = await buildZip(r);
       downloadBytes(new Uint8Array(await zip.arrayBuffer()), `freelance-backup-${repo.mode === 'demo' ? 'DEMO-' : ''}${stamp()}.zip`, 'application/zip');
@@ -35,12 +37,13 @@ export function BackupPanel() {
     setError(null); setResult(null); setLegacy(null);
     const f = input.files?.[0]; input.value = '';
     if (!f) return;
-    try { setRestore(await readZip(await f.arrayBuffer())); } catch (e) { setRestore(null); setError(errorMessage(e)); }
+    try { const { readZip } = await backupLib(); setRestore(await readZip(await f.arrayBuffer())); } catch (e) { setRestore(null); setError(errorMessage(e)); }
   });
   const doRestore = () => run(async () => {
     if (!restore) return;
     setError(null);
     try {
+      const { restoreBackup } = await backupLib();
       const r = await restoreBackup(repo, restore.payload, restore.files);
       setResult({ title: 'השחזור הושלם', differences: r.differences, notes: Object.entries(r.counts).map(([k, v]) => `${k}: ${v}`) });
       setRestore(null);
@@ -57,6 +60,7 @@ export function BackupPanel() {
     if (!legacy) return;
     setError(null);
     try {
+      const { importLegacy } = await backupLib();
       const r = await importLegacy(repo, legacy);
       setResult({ title: 'הייבוא מהאפליקציה הקודמת הושלם', differences: r.differences, notes: [...r.skippedFiles.map((s) => `קובץ שלא יובא: ${s}`)] });
       setLegacy(null);

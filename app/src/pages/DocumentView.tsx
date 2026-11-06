@@ -7,7 +7,6 @@ import { navigate, useRoute } from '../router';
 import { DataState, Dialog, Field, Money, fmtDate, useAsync, useBusy, useToast } from '../ui/kit';
 import { StatusTag } from './Documents';
 import type { AllocationRecord, Customer, Doc, DocumentOutput, InvoiceBalance, Profile } from '../data/types';
-import { downloadBytes, producePdf } from '../lib/documentPdf';
 
 export function DocumentView({ id }: { id: string }) {
   const repo = useRepo();
@@ -86,6 +85,7 @@ function View({ doc, related, profile, customers, reload, autoIssue, payments, o
   const pdf = (mode: 'download' | 'print') => run(async () => {
     setError(null);
     try {
+      const { downloadBytes, producePdf } = await import('../lib/documentPdf');
       const r = await producePdf(repo, { doc, related, profile, customers, allocations: payments.allocations, docs: payments.docs });
       if (mode === 'download') {
         downloadBytes(r.bytes, r.filename);

@@ -79,6 +79,7 @@ export function LoginPage({ onDemo }: { onDemo: () => void }) {
         </details>
       </div>
       <button className="btn btn-secondary" onClick={onDemo}>פתיחה במצב דמו (נתונים סינתטיים, מקומי בלבד)</button>
+      <p className="muted" style={{ marginTop: 16 }}>האפליקציה הקודמת עדיין זמינה, עם הנתונים שלה: <a href="/legacy/">פתיחת הגרסה הקודמת</a></p>
     </Frame>
   );
 }
