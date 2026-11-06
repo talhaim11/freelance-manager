@@ -6,7 +6,8 @@ import { loadLiveTarget, type Account } from './env';
 const { target } = loadLiveTarget();
 test.skip(!target, 'no live Supabase target configured');
 const T = target!;
-const BASE = 'http://localhost:5175/';
+// FM_LIVE_BASE_URL runs the suite against a deployed site (e.g. a Netlify draft deploy) instead of local vite.
+const BASE = process.env.FM_LIVE_BASE_URL ?? 'http://localhost:5175/';
 
 async function login(page: Page, a: Account) {
   await page.goto(BASE);

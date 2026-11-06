@@ -9,7 +9,8 @@ import { loadLiveTarget, type Account } from './env';
 const { target } = loadLiveTarget();
 test.skip(!target, 'no live Supabase target configured');
 const T = target!;
-const BASE = 'http://localhost:5175/';
+// FM_LIVE_BASE_URL runs the suite against a deployed site (e.g. a Netlify draft deploy) instead of local vite.
+const BASE = process.env.FM_LIVE_BASE_URL ?? 'http://localhost:5175/';
 const RUN = randomUUID().slice(0, 6);
 
 async function phoneContext(browser: Browser): Promise<BrowserContext> {
@@ -259,6 +260,7 @@ test('phone over the local network (plain http, not a secure context) can sign i
   const addrs = Object.values(networkInterfaces()).flat().filter((i) => i && i.family === 'IPv4' && !i.internal).map((i) => i!.address);
   const ip = addrs.find((a) => /^192\.168\.|^10\.|^172\.(1[6-9]|2\d|3[01])\./.test(a)) ?? addrs[0];
   test.skip(!ip, 'no LAN address on this machine');
+  test.skip(!!process.env.FM_LIVE_BASE_URL, 'covered by the deployed HTTPS site itself');
   const ctx = await phoneContext(browser);
   const phone = await ctx.newPage();
   const base = `http://${ip}:5175/`;

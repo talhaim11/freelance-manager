@@ -15,7 +15,7 @@ export default defineConfig({
   fullyParallel: false,
   reporter: [['list']],
   use: { trace: 'retain-on-failure', locale: 'he-IL', timezoneId: 'Asia/Jerusalem', ...devices['Desktop Chrome'], viewport: { width: 1280, height: 900 } },
-  webServer: target ? {
+  webServer: target && !process.env.FM_LIVE_BASE_URL ? {
     command: `npx vite --port ${LIVE_PORT} --strictPort --host`,
     port: LIVE_PORT,
     reuseExistingServer: false,
