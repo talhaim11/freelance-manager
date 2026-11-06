@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type { Session } from '@supabase/supabase-js';
-import { backendConfigured, backendLabel, backendState, supabase } from './data/backend';
+import { backendConfigured, backendLabel, backendState, consumeAuthLinkFromUrl, supabase } from './data/backend';
 import { DemoRepo } from './data/demoRepo';
 import { SupabaseRepo } from './data/supabaseRepo';
 import type { Repo } from './data/types';
@@ -8,7 +8,8 @@ import { useRoute } from './router';
 import { RECONNECTED_EVENT, useOnline, useToast } from './ui/kit';
 import { HomePage } from './pages/Home';
 import { IncomePage } from './pages/Income';
-import { AssistantPlaceholder as AssistantPage } from './pages/Simple';
+import { AssistantPage } from './pages/Assistant';
+import { OnboardingPage } from './pages/Onboarding';
 import { ExpenseEditor, ExpensesPage } from './pages/Expenses';
 import { TaxesPage } from './pages/Taxes';
 import { DocumentsPage } from './pages/Documents';
@@ -16,7 +17,7 @@ import { CustomerPage } from './pages/Customer';
 import { DocumentEditor } from './pages/DocumentEditor';
 import { DocumentView } from './pages/DocumentView';
 import { SettingsPage } from './pages/Settings';
-import { ConnectionErrorPage, LoginPage, NotAllowedPage, ReauthDialog, SetupPage } from './pages/Access';
+import { ConnectionErrorPage, LoginPage, NotAllowedPage, ReauthDialog, SetPasswordPage, SetupPage } from './pages/Access';
 
 const RepoCtx = createContext<Repo | null>(null);
 export function useRepo(): Repo {
@@ -75,6 +76,7 @@ function Page({ route }: { route: string }) {
   if (view) return <DocumentView id={view[1]} />;
   if (path === '/assistant') return <AssistantPage />;
   if (path === '/settings') return <SettingsPage />;
+  if (path === '/onboarding') return <OnboardingPage />;
   return <div className="card"><h1>הדף לא נמצא</h1><a href="#/">חזרה לבית</a></div>;
 }
 
@@ -146,10 +148,12 @@ export function App() {
   const [account, setAccount] = useState<Account | null>(null);
   const [forceReauth, setForceReauth] = useState(false);
 
+  const [settingPassword, setSettingPassword] = useState(false);
   useEffect(() => {
     if (!backendConfigured || demo) return;
     const sb = supabase();
-    sb.auth.getSession().then(({ data }) => setSession(data.session), () => setSession(null));
+    consumeAuthLinkFromUrl().then((kind) => { if (kind === 'recovery') setSettingPassword(true); })
+      .finally(() => sb.auth.getSession().then(({ data }) => setSession(data.session), () => setSession(null)));
     const { data: sub } = sb.auth.onAuthStateChange((_event, s) => setSession(s));
     return () => sub.subscription.unsubscribe();
   }, [demo]);
@@ -195,6 +199,9 @@ export function App() {
   };
 
   const needReauth = !demo && !!account && (session === null || forceReauth);
+  if (settingPassword && session) {
+    return <SetPasswordPage onDone={() => { setSettingPassword(false); toast('הסיסמה נשמרה. מעכשיו נכנסים איתה.', 'success'); }} />;
+  }
 
   if (repo) {
     return (

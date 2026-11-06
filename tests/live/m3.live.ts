@@ -21,8 +21,10 @@ async function signedIn(a: Account) {
 }
 /** Takes the next unused (empty) restore account; restored accounts cannot be emptied again. */
 async function freshAccount(): Promise<SupabaseClient> {
-  for (const a of T.restore) {
-    const c = await signedIn(a);
+  // The last pool account is reserved for the password-reset browser test.
+  for (const a of T.restore.slice(0, -1)) {
+    let c: SupabaseClient;
+    try { c = await signedIn(a); } catch { continue; }
     const [x, y] = await Promise.all([c.from('documents').select('id').limit(1), c.from('customers').select('id').limit(1)]);
     if (!x.data?.length && !y.data?.length) return c;
     await c.auth.signOut({ scope: 'local' });

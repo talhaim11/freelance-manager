@@ -3,6 +3,7 @@ import { estimateIncomeTax, type EstimateInput, type Regime } from '../domain/ta
 import { RULE_SETS, SUPPORTED_TAX_YEARS } from '../domain/tax/rules';
 import { formatILS, parseShekels } from '../domain/money';
 import { Field, Money } from '../ui/kit';
+import { GuidedReports } from './Reports';
 
 type Form = Record<'salary' | 'withheld' | 'turnover' | 'expenses' | 'points' | 'advances' | 'customersWithheld', string> & { regime: '' | Regime; year: string };
 
@@ -31,7 +32,6 @@ export function TaxesPage() {
       <h1>מסים ודוחות</h1>
       <div className="notice notice-warning" role="note">
         <strong>הערכה בלבד.</strong> זה אינו ייעוץ מס ואינו סכום רשמי. ההערכה מחושבת בכללים קבועים ומתועדים, וחלקים ממנה אינם נכללים (פירוט למטה).
-        לוח מועדים אישי ודוחות מודרכים יתווספו בשלב 3.
       </div>
 
       <section className="card" aria-labelledby="est-h">
@@ -82,6 +82,8 @@ export function TaxesPage() {
           )}
         </div>
       </section>
+
+      <GuidedReports />
 
       {rules && (
         <section className="card" aria-labelledby="rules-h">

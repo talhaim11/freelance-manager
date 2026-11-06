@@ -75,10 +75,59 @@ export function LoginPage({ onDemo }: { onDemo: () => void }) {
         <PasswordForm submitLabel="כניסה" />
         <details style={{ marginTop: 12 }}>
           <summary>שכחתי סיסמה</summary>
-          <p>איפוס סיסמה נעשה בלוח הבקרה של Supabase (Authentication → Users). שליחת דוא״ל איפוס תתווסף כשיוגדר שרת דוא״ל.</p>
+          <ForgotPassword />
         </details>
       </div>
       <button className="btn btn-secondary" onClick={onDemo}>פתיחה במצב דמו (נתונים סינתטיים, מקומי בלבד)</button>
+    </Frame>
+  );
+}
+
+function ForgotPassword() {
+  const [email, setEmail] = useState('');
+  const [msg, setMsg] = useState<string | null>(null);
+  const { busy, run } = useBusy();
+  const send = () => run(async () => {
+    if (!email.trim()) return;
+    const redirectTo = `${window.location.origin}${window.location.pathname}`;
+    const { error } = await supabase().auth.resetPasswordForEmail(email.trim(), { redirectTo });
+    // Same message either way: does not reveal whether the account exists.
+    setMsg(error && /rate|too many/i.test(error.message) ? 'נשלחו יותר מדי בקשות. נסו שוב בעוד שעה.'
+      : 'אם הכתובת שייכת לחשבון קיים, נשלח אליה קישור לקביעת סיסמה חדשה (בדקו גם בספאם).');
+  });
+  return (
+    <form onSubmit={(e) => { e.preventDefault(); void send(); }} noValidate>
+      <Field label="כתובת הדוא״ל של החשבון">{(a) => <input {...a} type="email" dir="ltr" autoComplete="username" value={email} onChange={(e) => setEmail(e.target.value)} />}</Field>
+      <button className="btn btn-secondary" type="submit" disabled={busy}>{busy ? 'שולח…' : 'שליחת קישור לאיפוס'}</button>
+      {msg && <p className="notice notice-info" role="status">{msg}</p>}
+    </form>
+  );
+}
+
+/** After following an emailed recovery/invite link: choose a new password (never shown to anyone else). */
+export function SetPasswordPage({ onDone }: { onDone: () => void }) {
+  const [pw, setPw] = useState('');
+  const [pw2, setPw2] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const { busy, run } = useBusy();
+  const save = () => run(async () => {
+    setError(null);
+    if (pw.length < 10 || !/[a-zA-Z]/.test(pw) || !/\d/.test(pw)) { setError('לפחות 10 תווים, עם אותיות וספרות.'); return; }
+    if (pw !== pw2) { setError('הסיסמאות אינן זהות.'); return; }
+    const { error: e } = await supabase().auth.updateUser({ password: pw });
+    if (e) { setError(/session|jwt|expired/i.test(e.message) ? 'הקישור פג תוקף. בקשו קישור חדש ממסך הכניסה.' : 'שמירת הסיסמה נכשלה. נסו שוב.'); return; }
+    setPw(''); setPw2('');
+    onDone();
+  });
+  return (
+    <Frame>
+      <h1>קביעת סיסמה</h1>
+      <form className="card" onSubmit={(e) => { e.preventDefault(); void save(); }} noValidate>
+        <Field label="סיסמה חדשה" hint="לפחות 10 תווים, עם אותיות וספרות.">{(a) => <input {...a} type="password" dir="ltr" autoComplete="new-password" value={pw} onChange={(e) => setPw(e.target.value)} />}</Field>
+        <Field label="שוב, לאימות">{(a) => <input {...a} type="password" dir="ltr" autoComplete="new-password" value={pw2} onChange={(e) => setPw2(e.target.value)} />}</Field>
+        {error && <p className="notice notice-error" role="alert">{error}</p>}
+        <button className="btn" type="submit" disabled={busy}>{busy ? 'שומר…' : 'שמירת סיסמה'}</button>
+      </form>
     </Frame>
   );
 }

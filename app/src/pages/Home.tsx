@@ -2,22 +2,17 @@ import { useRepo } from '../App';
 import { vatStatusOn, VAT_STATUS_LABEL } from '../domain/classification';
 import { rulesFor } from '../domain/tax/rules';
 import { DataState, Money, useAsync, todayLocal } from '../ui/kit';
-import type { Doc } from '../data/types';
+import { yearSummary } from '../domain/dashboard';
 
 const yearOf = (d: string) => Number(d.slice(0, 4));
 
-/** Sums issued (not cancelled) documents of one type in a year. Cancellations are excluded with their original. */
-function sumIssued(docs: Doc[], type: Doc['doc_type'], year: number) {
-  const list = docs.filter((d) => d.doc_type === type && d.status === 'issued' && yearOf(d.issue_date) === year);
-  return { total: list.reduce((s, d) => s + (d.total_agorot ?? 0), 0), count: list.length };
-}
 
 export function HomePage() {
   const repo = useRepo();
   const [state, retry] = useAsync(async () => {
-    const [docs, vat, profile, balances, expenses] = await Promise.all([
-      repo.listDocuments(), repo.listVatPeriods(), repo.getProfile(), repo.listInvoiceBalances(), repo.listExpenses()]);
-    return { docs, vat, profile, balances, expenses };
+    const [docs, vat, profile, balances, expenses, allocations, tax] = await Promise.all([
+      repo.listDocuments(), repo.listVatPeriods(), repo.getProfile(), repo.listInvoiceBalances(), repo.listExpenses(), repo.listAllocations(), repo.getTaxProfile()]);
+    return { docs, vat, profile, balances, expenses, allocations, tax };
   }, [repo]);
   const year = new Date().getFullYear();
 
@@ -30,18 +25,20 @@ export function HomePage() {
         <a className="btn btn-secondary" href="#/expenses/new">📷 הוצאה</a>
       </div>
       <DataState state={state} retry={retry}>
-        {({ docs, vat, profile, balances, expenses }) => {
+        {({ docs, vat, profile, balances, expenses, allocations, tax }) => {
+          const ys = yearSummary(docs, allocations, year);
+          const invoices = { total: ys.invoiced, count: ys.invoiceCount };
+          const receipts = { total: ys.received, count: ys.receiptCount };
           const owed = balances.filter((b) => b.balance_agorot > 0);
           const owedTotal = owed.reduce((s, b) => s + b.balance_agorot, 0);
           const yearExpenses = expenses.filter((e) => yearOf(e.doc_date) === year);
           const toReview = expenses.filter((e) => e.status === 'needs_review').length;
-          const invoices = sumIssued(docs, 'transaction_invoice', year);
-          const receipts = sumIssued(docs, 'receipt', year);
           const status = vatStatusOn(vat, todayLocal());
           const rules = rulesFor(year);
           const ceiling = rules?.exemptDealerCeiling.amount ?? null;
           const drafts = docs.filter((d) => d.status === 'draft');
           const todo: { text: string; href: string }[] = [];
+          if (!tax?.onboarding_done) todo.push({ text: 'הגדרה ראשונית: פרטי עסק, סטטוס מע"מ, מסלול מס ומספור (כמה דקות)', href: '#/onboarding' });
           if (!profile || !profile.legal_name || !profile.id_number || !profile.address) todo.push({ text: 'השלמת פרטי העסק (נדרשים להפקת מסמכים)', href: '#/settings' });
           if (!status) todo.push({ text: 'הגדרת סטטוס מע"מ ותאריך תחילה', href: '#/settings' });
           if (toReview) todo.push({ text: `${toReview} הוצאות ממתינות לבדיקה מול המסמך`, href: '#/expenses' });

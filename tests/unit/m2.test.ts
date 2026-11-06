@@ -127,3 +127,18 @@ describe('demo repository: same payment rules as the database', () => {
     expect(await repo.attachmentUrl(saved.attachments[0])).toBe('data:image/png;base64,AQID');
   });
 });
+
+import { yearSummary } from '../../app/src/domain/dashboard';
+describe('dashboard totals never double count', () => {
+  const d = (id: string, doc_type: string, status: string, total: number, date = '2026-05-01') =>
+    ({ id, doc_type, status, total_agorot: total, issue_date: date } as unknown as import('../../app/src/data/types').Doc);
+  it('invoice + its receipts are one income, shown in two separate views; cancellations excluded', () => {
+    const docs = [d('i1', 'transaction_invoice', 'issued', 100000), d('r1', 'receipt', 'issued', 60000), d('r2', 'receipt', 'cancelled', 40000),
+      d('c1', 'cancellation', 'issued', -40000), d('i2', 'transaction_invoice', 'issued', 5000, '2025-12-31'), d('r3', 'receipt', 'issued', 5000, '2026-01-02')];
+    const s = yearSummary(docs, [{ receipt_id: 'r1', invoice_id: 'i1', amount_agorot: 60000 }, { receipt_id: 'r2', invoice_id: 'i1', amount_agorot: 40000 }], 2026);
+    expect(s.invoiced).toBe(100000);
+    expect(s.received).toBe(65000);                 // r1 + r3 (cash basis, by receipt date); r2 cancelled
+    expect(s.receivedAgainstInvoices).toBe(60000);  // cancelled r2's allocation no longer counts
+    expect(s.excludedCancelled).toBe(1);
+  });
+});

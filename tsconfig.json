@@ -16,5 +16,5 @@
     "types": ["node"],
     "noEmit": true
   },
-  "include": ["app/src", "tests", "vite.config.ts", "vitest.config.ts", "vitest.live.config.ts", "playwright.config.ts", "playwright.live.config.ts"]
+  "include": ["app/src", "tests", "netlify/functions", "vite.config.ts", "vitest.config.ts", "vitest.live.config.ts", "playwright.config.ts", "playwright.live.config.ts"]
 }

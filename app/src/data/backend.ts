@@ -36,6 +36,24 @@ export const backendState = computeState();
 export const backendConfigured = backendState.kind === 'ready';
 
 /** Human label for where cloud data lives, e.g. "שרת מקומי (פיתוח)" or "סביבת פיתוח · abcd". */
+/**
+ * An emailed recovery/invite link lands on the app with tokens in the URL fragment
+ * (#access_token=…&type=recovery). Consume them once, before the hash router sees them,
+ * and remove them from the address bar and history.
+ */
+export async function consumeAuthLinkFromUrl(): Promise<'recovery' | null> {
+  const h = window.location.hash.replace(/^#/, '');
+  if (!/(^|&)access_token=/.test(h)) return null;
+  const q = new URLSearchParams(h);
+  const type = q.get('type');
+  history.replaceState(null, '', window.location.pathname + '#/');
+  const access_token = q.get('access_token'), refresh_token = q.get('refresh_token');
+  if (!access_token || !refresh_token || !backendConfigured) return null;
+  const { error } = await supabase().auth.setSession({ access_token, refresh_token });
+  if (error) return null;
+  return type === 'recovery' || type === 'invite' || type === 'magiclink' ? 'recovery' : null;
+}
+
 export function backendLabel(): string {
   if (!url) return '';
   const host = new URL(url).hostname;
