@@ -1,7 +1,15 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { VatStatusPeriod } from '../domain/classification';
 import { AppError, ERROR_MESSAGES } from '../domain/errors';
-import type { Customer, Doc, DraftInput, Profile, Repo, Series } from './types';
+import { fileExtension } from '../domain/expenses';
+import type {
+  AllocationRecord, AttachmentUpload, Customer, Doc, DraftInput, Expense, ExpenseAttachment, ExpenseInput,
+  InvoiceBalance, Profile, Repo, Series,
+} from './types';
+
+const BUCKET = 'expense-files';
+const CUSTOMER_COLS = 'id,name,tax_id,address,email,phone';
+const EXPENSE_COLS = 'id,client_key,supplier,supplier_tax_id,doc_number,doc_date,amount_agorot,vat_agorot,category,business_use_pct,status,deductible_status,input_vat_status,notes,created_at,attachments:expense_attachments(id,expense_id,storage_path,sha256,mime_type,size_bytes,original_name,created_at)';
 
 type PgError = { message: string; code?: string; details?: string | null; hint?: string | null };
 
@@ -77,11 +85,13 @@ export class SupabaseRepo implements Repo {
   }
   async listCustomers() {
     await this.authed();
-    return this.c(await this.sb.from('customers').select('id,name,tax_id,address,email,phone').order('name')) as Customer[];
+    return this.c(await this.sb.from('customers').select(CUSTOMER_COLS).order('name')) as Customer[];
   }
-  async addCustomer(c: Omit<Customer, 'id'>) {
+  async addCustomer(c: Omit<Customer, 'id'>, clientKey: string) {
     await this.authed();
-    return this.c(await this.sb.from('customers').insert(c).select('id,name,tax_id,address,email,phone').single()) as Customer;
+    // ON CONFLICT DO NOTHING on the client key, then read back: a retry returns the same customer.
+    this.c(await this.sb.from('customers').upsert({ ...c, client_key: clientKey }, { onConflict: 'client_key', ignoreDuplicates: true }));
+    return this.c(await this.sb.from('customers').select(CUSTOMER_COLS).eq('client_key', clientKey).single()) as Customer;
   }
   async updateCustomer(c: Customer) {
     await this.authed();
@@ -129,5 +139,59 @@ export class SupabaseRepo implements Repo {
   async cancelDocument(id: string, reason: string, idempotencyKey: string) {
     await this.authed();
     return this.c(await this.sb.rpc('cancel_document', { p_document_id: id, p_reason: reason, p_idempotency_key: idempotencyKey }).single()) as Doc;
+  }
+
+  async listInvoiceBalances() {
+    await this.authed();
+    return this.c(await this.sb.from('invoice_balances').select('*').order('issue_date')) as InvoiceBalance[];
+  }
+  async listAllocationsFor(documentId: string) {
+    await this.authed();
+    return this.c(await this.sb.from('payment_allocations').select('receipt_id,invoice_id,amount_agorot')
+      .or(`receipt_id.eq.${documentId},invoice_id.eq.${documentId}`)) as AllocationRecord[];
+  }
+
+  async listExpenses() {
+    await this.authed();
+    return this.c(await this.sb.from('expenses').select(EXPENSE_COLS).order('doc_date', { ascending: false })) as Expense[];
+  }
+  async saveExpense(e: ExpenseInput, id?: string) {
+    await this.authed();
+    if (id) {
+      const { client_key: _k, ...rest } = e;
+      const rows = this.c(await this.sb.from('expenses').update(rest).eq('id', id).select(EXPENSE_COLS));
+      if (!rows?.length) throw new AppError('NOT_FOUND');
+      return rows[0] as Expense;
+    }
+    this.c(await this.sb.from('expenses').upsert(e, { onConflict: 'client_key', ignoreDuplicates: true }));
+    return this.c(await this.sb.from('expenses').select(EXPENSE_COLS).eq('client_key', e.client_key).single()) as Expense;
+  }
+  async addExpenseAttachment(expenseId: string, f: AttachmentUpload) {
+    await this.authed();
+    const { data: u } = await this.sb.auth.getUser();
+    if (!u.user) throw this.expired(new AppError('SESSION_EXPIRED'));
+    const path = `${u.user.id}/${f.id}.${fileExtension(f.mime_type)}`;
+    // 1. The file, privately. An object already at this path is this same upload (retry after a lost response).
+    const up = await this.sb.storage.from(BUCKET).upload(path, f.bytes, { contentType: f.mime_type, upsert: false });
+    if (up.error) {
+      const status = Number((up.error as { statusCode?: string | number }).statusCode ?? (up.error as { status?: number }).status ?? 0);
+      const dup = status === 409 || /already exists|duplicate/i.test(up.error.message);
+      if (!dup) throw this.expired(status === 400 && /jwt|token/i.test(up.error.message) ? new AppError('SESSION_EXPIRED', up.error.message)
+        : status === 403 || /row-level security|unauthori[sz]ed/i.test(up.error.message) ? new AppError('NOT_ALLOWED', up.error.message)
+        : /payload too large|size/i.test(up.error.message) ? new AppError('FILE_TOO_LARGE', up.error.message)
+        : /mime|type/i.test(up.error.message) ? new AppError('FILE_TYPE_NOT_ALLOWED', up.error.message)
+        : mapError({ message: up.error.message }, status));
+    }
+    // 2. Its record. The id is fixed per selected file, so a repeat inserts nothing new.
+    const row = { id: f.id, expense_id: expenseId, storage_path: path, sha256: f.sha256, mime_type: f.mime_type,
+      size_bytes: f.bytes.length, original_name: f.original_name };
+    this.c(await this.sb.from('expense_attachments').upsert(row, { onConflict: 'id', ignoreDuplicates: true }));
+    return this.c(await this.sb.from('expense_attachments').select('*').eq('id', f.id).single()) as ExpenseAttachment;
+  }
+  async attachmentUrl(a: ExpenseAttachment) {
+    await this.authed();
+    const r = await this.sb.storage.from(BUCKET).createSignedUrl(a.storage_path, 300);
+    if (r.error || !r.data) throw new AppError('NOT_FOUND', r.error?.message);
+    return r.data.signedUrl;
   }
 }

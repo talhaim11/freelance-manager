@@ -15,8 +15,9 @@ function sumIssued(docs: Doc[], type: Doc['doc_type'], year: number) {
 export function HomePage() {
   const repo = useRepo();
   const [state, retry] = useAsync(async () => {
-    const [docs, vat, profile] = await Promise.all([repo.listDocuments(), repo.listVatPeriods(), repo.getProfile()]);
-    return { docs, vat, profile };
+    const [docs, vat, profile, balances, expenses] = await Promise.all([
+      repo.listDocuments(), repo.listVatPeriods(), repo.getProfile(), repo.listInvoiceBalances(), repo.listExpenses()]);
+    return { docs, vat, profile, balances, expenses };
   }, [repo]);
   const year = new Date().getFullYear();
 
@@ -26,12 +27,14 @@ export function HomePage() {
       <div className="btn-row" style={{ marginBottom: 16 }}>
         <a className="btn" href="#/documents/new">+ מסמך חדש</a>
         <a className="btn btn-secondary" href="#/documents/new?type=receipt">₪ רישום תשלום (קבלה)</a>
-        <button className="btn btn-secondary" aria-disabled="true" aria-describedby="expense-later"
-          onClick={(e) => e.preventDefault()}>📷 הוצאה</button>
-        <span id="expense-later" className="muted">קליטת הוצאות — בשלב הבא</span>
+        <a className="btn btn-secondary" href="#/expenses/new">📷 הוצאה</a>
       </div>
       <DataState state={state} retry={retry}>
-        {({ docs, vat, profile }) => {
+        {({ docs, vat, profile, balances, expenses }) => {
+          const owed = balances.filter((b) => b.balance_agorot > 0);
+          const owedTotal = owed.reduce((s, b) => s + b.balance_agorot, 0);
+          const yearExpenses = expenses.filter((e) => yearOf(e.doc_date) === year);
+          const toReview = expenses.filter((e) => e.status === 'needs_review').length;
           const invoices = sumIssued(docs, 'transaction_invoice', year);
           const receipts = sumIssued(docs, 'receipt', year);
           const status = vatStatusOn(vat, todayLocal());
@@ -41,6 +44,7 @@ export function HomePage() {
           const todo: { text: string; href: string }[] = [];
           if (!profile || !profile.legal_name || !profile.id_number || !profile.address) todo.push({ text: 'השלמת פרטי העסק (נדרשים להפקת מסמכים)', href: '#/settings' });
           if (!status) todo.push({ text: 'הגדרת סטטוס מע"מ ותאריך תחילה', href: '#/settings' });
+          if (toReview) todo.push({ text: `${toReview} הוצאות ממתינות לבדיקה מול המסמך`, href: '#/expenses' });
           if (drafts.length) todo.push({ text: `${drafts.length} טיוטות ממתינות להפקה או למחיקה`, href: '#/documents' });
           return (
             <>
@@ -59,8 +63,13 @@ export function HomePage() {
                   </div>
                   <div className="metric">
                     <div className="kind">מי חייב לי</div>
-                    <div className="value muted" style={{ fontSize: '1.1rem' }}>לא זמין עדיין</div>
-                    <div className="def">חישוב יתרות דורש שיוך תשלומים לחשבוניות — בשלב הבא.</div>
+                    <div className="value"><Money agorot={owedTotal} /></div>
+                    <div className="def">{owed.length} חשבוניות עסקה פתוחות, פחות תשלומים ששויכו בקבלות. <a href="#/income">פירוט</a></div>
+                  </div>
+                  <div className="metric">
+                    <div className="kind">הוצאות שנרשמו ב-{year}</div>
+                    <div className="value"><Money agorot={yearExpenses.reduce((s, e) => s + e.amount_agorot, 0)} /></div>
+                    <div className="def">{yearExpenses.length} הוצאות, סכום בפועל. מה מוכר במס — טרם נקבע. <a href="#/expenses">לרשימה</a></div>
                   </div>
                   <div className="metric">
                     <div className="kind">כמה לשריין למסים <span className="tag tag-estimate">הערכה</span></div>

@@ -119,7 +119,7 @@ describe.skipIf(!target)(`live Supabase (${target?.kind ?? reason})`, () => {
   it('the same draft submitted twice (double click / retry) creates one row', async () => {
     const repo = new SupabaseRepo(ownerA);
     const input = { idempotency_key: randomUUID(), series_id: seriesId, doc_type: 'transaction_invoice' as const, issue_date: '2026-11-05',
-      customer_id: customerId, lines: [line('טיוטה כפולה', 10)], notes: '', payment_details: {} };
+      customer_id: customerId, lines: [line('טיוטה כפולה', 10)], notes: '', payment_details: {}, allocations: [] };
     const [a, b] = await Promise.all([repo.createDraft(input), new SupabaseRepo(ownerB).createDraft(input)]);
     expect(a.id).toBe(b.id);
     expect((await ownerA.from('documents').select('id').eq('idempotency_key', input.idempotency_key)).data).toHaveLength(1);

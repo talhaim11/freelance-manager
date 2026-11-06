@@ -1,15 +1,3 @@
-export function ExpensesPlaceholder() {
-  return (
-    <>
-      <h1>הוצאות</h1>
-      <div className="card">
-        <p>קליטת הוצאות (צילום, העלאה, תור בדיקה, קבצים מצורפים בשרת) תגיע בשלב הבא.</p>
-        <p>ההוצאות והקבלות הקיימות נשארות באפליקציה הקודמת, ויועברו במיגרציה מבוקרת — אחרי גיבוי, בדיקת ספירות וסכומים, ואישורך.</p>
-      </div>
-    </>
-  );
-}
-
 export function AssistantPlaceholder() {
   return (
     <>

@@ -8,8 +8,11 @@ import {
 } from '../domain/documents';
 import { errorMessage, ERROR_MESSAGES } from '../domain/errors';
 import { agorotToShekelInput, parseShekels } from '../domain/money';
+import { allocationProblems, autoAllocate, sumAllocations, type Allocation } from '../domain/payments';
+import type { Customer, InvoiceBalance } from '../data/types';
+import { NewCustomerDialog } from './CustomerForm';
 import { navigate } from '../router';
-import { DataState, Field, Money, todayLocal, useAsync, useBusy, useToast } from '../ui/kit';
+import { DataState, Field, Money, fmtDate, todayLocal, useAsync, useBusy, useToast } from '../ui/kit';
 
 interface LineForm { description: string; quantity: string; price: string; discount: string }
 const emptyLine = (): LineForm => ({ description: '', quantity: '1', price: '', discount: '' });
@@ -26,24 +29,25 @@ function toLines(forms: LineForm[]): { lines: DocLine[]; invalid: number[] } {
   return { lines, invalid };
 }
 
-export function DocumentEditor({ draftId, initialType }: { draftId?: string; initialType?: string | null }) {
+export function DocumentEditor({ draftId, initialType, fromInvoice }: { draftId?: string; initialType?: string | null; fromInvoice?: string | null }) {
   const repo = useRepo();
   const [state, retry] = useAsync(async () => {
-    const [series, customers, vat, profile, draft] = await Promise.all([
+    const [series, customers, vat, profile, draft, balances] = await Promise.all([
       repo.listSeries(), repo.listCustomers(), repo.listVatPeriods(), repo.getProfile(),
       draftId ? repo.getDocument(draftId) : Promise.resolve(null),
+      repo.listInvoiceBalances(),
     ]);
-    return { series, customers, vat, profile, draft };
+    return { series, customers, vat, profile, draft, balances };
   }, [repo, draftId]);
   return (
     <>
-      <h1>{draftId ? 'עריכת טיוטה' : 'מסמך חדש'}</h1>
+      <h1>{draftId ? 'עריכת טיוטה' : fromInvoice ? 'קבלה על תשלום' : 'מסמך חדש'}</h1>
       <DataState state={state} retry={retry}>
         {(d) => {
           if (draftId && (!d.draft || d.draft.status !== 'draft')) {
             return <div className="notice notice-error" role="alert">{ERROR_MESSAGES.FINALIZED_DOCUMENT}</div>;
           }
-          return <EditorForm {...d} initialType={initialType} onSeriesAdded={retry} />;
+          return <EditorForm {...d} initialType={initialType} fromInvoice={fromInvoice} onSeriesAdded={retry} />;
         }}
       </DataState>
     </>
@@ -56,7 +60,9 @@ function EditorForm(props: {
   vat: Awaited<ReturnType<ReturnType<typeof useRepo>['listVatPeriods']>>;
   profile: Awaited<ReturnType<ReturnType<typeof useRepo>['getProfile']>>;
   draft: Awaited<ReturnType<ReturnType<typeof useRepo>['getDocument']>>;
+  balances: InvoiceBalance[];
   initialType?: string | null;
+  fromInvoice?: string | null;
   onSeriesAdded: () => void;
 }) {
   const repo = useRepo();
@@ -65,20 +71,30 @@ function EditorForm(props: {
   const draft = props.draft;
   // One key per editor session: repeated submits create a single draft.
   const idempotencyKey = useRef(draft?.idempotency_key ?? uuid());
+  // "Receipt for this invoice": prefilled from the invoice's open balance.
+  const source = !draft && props.fromInvoice ? props.balances.find((b) => b.invoice_id === props.fromInvoice && b.balance_agorot > 0) ?? null : null;
+  const [customers, setCustomers] = useState<Customer[]>(props.customers);
+  const [newCustomerOpen, setNewCustomerOpen] = useState(false);
 
   const [issueDate, setIssueDate] = useState(draft?.issue_date ?? todayLocal());
   const vatStatus = vatStatusOn(props.vat, issueDate);
   const allowedTypes = creatableDocTypes(vatStatus);
   const [docType, setDocType] = useState<DocType>(
-    draft?.doc_type ?? (allowedTypes.includes(props.initialType as DocType) ? (props.initialType as DocType) : 'transaction_invoice'));
+    draft?.doc_type ?? (source ? 'receipt' : allowedTypes.includes(props.initialType as DocType) ? (props.initialType as DocType) : 'transaction_invoice'));
   const seriesForType = props.series.filter((s) => s.doc_type === docType && !s.is_legacy);
   const [seriesId, setSeriesId] = useState(draft?.series_id ?? '');
-  const [customerId, setCustomerId] = useState(draft?.customer_id ?? '');
+  const [customerId, setCustomerId] = useState(draft?.customer_id ?? source?.customer_id ?? '');
   const [notes, setNotes] = useState(draft?.notes ?? '');
   const [payment, setPayment] = useState<PaymentDetails>(draft?.payment_details ?? {});
   const [lineForms, setLineForms] = useState<LineForm[]>(draft?.lines.length
     ? draft.lines.map((l) => ({ description: l.description, quantity: String(l.quantity), price: agorotToShekelInput(l.unit_price_agorot), discount: l.discount_agorot ? agorotToShekelInput(l.discount_agorot) : '' }))
+    : source ? [{ description: `תשלום עבור חשבונית עסקה מס' ${source.number}`, quantity: '1', price: agorotToShekelInput(source.balance_agorot), discount: '' }]
     : [emptyLine()]);
+  // Allocation amounts per invoice (shekel strings). While "linked", a single allocation follows the receipt total.
+  const [allocForms, setAllocForms] = useState<Record<string, string>>(() => Object.fromEntries(
+    (draft?.allocations ?? (source ? [{ invoice_id: source.invoice_id, amount_agorot: source.balance_agorot }] : []))
+      .map((a) => [a.invoice_id, agorotToShekelInput(a.amount_agorot)])));
+  const [allocLinked, setAllocLinked] = useState(!!source);
   const [newSeriesStart, setNewSeriesStart] = useState('1');
   const [error, setError] = useState<string | null>(null);
   // Validation messages appear only after the user leaves a field or tries to save/issue —
@@ -95,8 +111,26 @@ function EditorForm(props: {
 
   const { lines, invalid } = useMemo(() => toLines(lineForms), [lineForms]);
   const totals = exemptTotals(lines.filter((_, i) => !invalid.includes(i)));
-  const customer = props.customers.find((c) => c.id === customerId) ?? null;
-  const problems = issueProblems({ docType, vatStatus, profile: props.profile, customer, lines, payment });
+  const customer = customers.find((c) => c.id === customerId) ?? null;
+
+  // Open invoices of this customer (plus any already chosen in this draft).
+  const openInvoices = docType === 'receipt' && customerId
+    ? props.balances.filter((b) => b.customer_id === customerId && (b.balance_agorot > 0 || b.invoice_id in allocForms))
+    : [];
+  const allocParsed = Object.entries(allocForms).filter(([, v]) => v.trim() !== '')
+    .map(([invoice_id, v]) => ({ invoice_id, amount_agorot: parseShekels(v) }));
+  const allocInvalid = docType === 'receipt' && allocParsed.some((a) => a.amount_agorot === null);
+  const allocations: Allocation[] = docType === 'receipt'
+    ? allocParsed.filter((a): a is Allocation => a.amount_agorot !== null && a.amount_agorot !== 0) : [];
+  useEffect(() => {
+    if (!allocLinked || !source) return;
+    const amt = Math.min(totals.total, source.balance_agorot);
+    setAllocForms({ [source.invoice_id]: agorotToShekelInput(Math.max(amt, 0)) });
+  }, [allocLinked, totals.total]); // eslint-disable-line react-hooks/exhaustive-deps
+  const allocProblems = docType === 'receipt'
+    ? [...new Set([...allocationProblems(totals.total, customerId || null, allocations, props.balances), ...(allocInvalid ? ['ALLOCATION_INVALID'] : [])])]
+    : [];
+  const problems = [...issueProblems({ docType, vatStatus, profile: props.profile, customer, lines, payment }), ...allocProblems];
   const lineErrs = lineProblems(lines);
   const fieldError = (i: number, field: 'd' | 'q' | 'p' | 'x'): string | null => {
     if (!shown(`${field}${i}`)) return null;
@@ -134,7 +168,9 @@ function EditorForm(props: {
       setTouched((t) => ({ ...t, ...Object.fromEntries(invalid.flatMap((i) => [[`p${i}`, true], [`x${i}`, true], [`q${i}`, true]])) }));
       setError('יש סכומים לא תקינים בשורות'); return;
     }
-    const input = { series_id: seriesId, doc_type: docType, issue_date: issueDate, customer_id: customerId || null, lines, notes, payment_details: docType === 'receipt' ? payment : {} };
+    if (allocInvalid) { setAttempted(true); setError('יש סכום שיוך לא תקין'); return; }
+    const input = { series_id: seriesId, doc_type: docType, issue_date: issueDate, customer_id: customerId || null, lines, notes,
+      payment_details: docType === 'receipt' ? payment : {}, allocations };
     try {
       let id = draft?.id;
       if (id) await repo.updateDraft(id, input);
@@ -149,7 +185,16 @@ function EditorForm(props: {
       <Field label="תאריך המסמך">{(a) => <input {...a} type="date" value={issueDate} onChange={(e) => setIssueDate(e.target.value)} />}</Field></div>;
   }
 
+  const allocated = sumAllocations(allocations);
+  const changeCustomer = (id: string) => {
+    setCustomerId(id);
+    // Allocations belong to one customer's invoices.
+    setAllocForms((f) => Object.fromEntries(Object.entries(f).filter(([inv]) => props.balances.find((b) => b.invoice_id === inv)?.customer_id === id)));
+    setAllocLinked(false);
+  };
+
   return (
+    <>
     <form onSubmit={(e) => { e.preventDefault(); void save(false); }} noValidate>
       <section className="card">
         <div className="grid grid-2">
@@ -178,18 +223,18 @@ function EditorForm(props: {
               <button type="button" className="btn btn-secondary" disabled={busy} onClick={() => void addSeries()}>יצירת סדרה</button>
             </div>
           )}
-          <Field label="לקוח" hint={props.customers.length ? undefined : 'אין לקוחות עדיין — הוסיפו בעמוד הכנסות ולקוחות.'}
+          <Field label="לקוח" hint={customers.length ? undefined : 'אין לקוחות עדיין — אפשר להוסיף כאן בלי לאבד את מה שמילאת.'}
             error={problems.includes('CUSTOMER_ADDRESS_REQUIRED') ? ERROR_MESSAGES.CUSTOMER_ADDRESS_REQUIRED
               : attempted && problems.includes('CUSTOMER_REQUIRED') ? ERROR_MESSAGES.CUSTOMER_REQUIRED : null}>
             {(a) => (
-              <select {...a} value={customerId} onChange={(e) => setCustomerId(e.target.value)}>
+              <select {...a} value={customerId} onChange={(e) => changeCustomer(e.target.value)}>
                 <option value="">בחירת לקוח…</option>
-                {props.customers.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                {customers.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
               </select>
             )}
           </Field>
         </div>
-        <a href="#/income">+ לקוח חדש</a>
+        <button type="button" className="btn btn-secondary" onClick={() => setNewCustomerOpen(true)}>+ לקוח חדש</button>
       </section>
 
       <section className="card" aria-labelledby="lines-h">
@@ -235,6 +280,41 @@ function EditorForm(props: {
         </section>
       )}
 
+      {docType === 'receipt' && customerId && (
+        <section className="card" aria-labelledby="alloc-h">
+          <h2 id="alloc-h">על חשבון אילו חשבוניות?</h2>
+          {openInvoices.length === 0 ? (
+            <p className="muted">אין ללקוח חשבוניות עסקה פתוחות. התשלום יירשם כתשלום שאינו משויך לחשבונית (למשל מקדמה).</p>
+          ) : (<>
+            <p className="muted">אפשר לשלם חשבונית חלקית או כמה חשבוניות בבת אחת. מה שלא משויך נשאר כיתרת זכות של הלקוח.</p>
+            <div className="table-wrap"><table>
+              <thead><tr><th scope="col">חשבונית</th><th scope="col">תאריך</th><th scope="col">סה"כ</th><th scope="col">יתרה פתוחה</th><th scope="col">סכום לשיוך (₪)</th></tr></thead>
+              <tbody>{openInvoices.map((b) => (
+                <tr key={b.invoice_id}>
+                  <td>מס' <span className="num">{b.number}</span></td>
+                  <td className="num">{fmtDate(b.issue_date)}</td>
+                  <td><Money agorot={b.total_agorot} /></td>
+                  <td><Money agorot={b.balance_agorot} /></td>
+                  <td><input aria-label={`סכום לשיוך לחשבונית ${b.number}`} inputMode="decimal" dir="ltr" value={allocForms[b.invoice_id] ?? ''}
+                    onChange={(e) => { setAllocLinked(false); setAllocForms((f) => ({ ...f, [b.invoice_id]: e.target.value })); }} /></td>
+                </tr>))}
+              </tbody>
+            </table></div>
+            <div className="btn-row" style={{ marginTop: 8 }}>
+              <button type="button" className="btn btn-secondary" onClick={() => {
+                setAllocLinked(false);
+                setAllocForms(Object.fromEntries(autoAllocate(totals.total, openInvoices).map((a) => [a.invoice_id, agorotToShekelInput(a.amount_agorot)])));
+              }}>שיוך אוטומטי (הישנה קודם)</button>
+              <button type="button" className="btn btn-secondary" onClick={() => { setAllocLinked(false); setAllocForms({}); }}>ניקוי שיוך</button>
+            </div>
+          </>)}
+          <p data-testid="alloc-summary">סכום הקבלה <Money agorot={totals.total} /> · משויך לחשבוניות <Money agorot={allocated} /> · לא משויך <Money agorot={totals.total - allocated} /></p>
+          {attempted && allocProblems.length > 0 && (
+            <ul className="error" role="alert">{allocProblems.map((p) => <li key={p}>{ERROR_MESSAGES[p]}</li>)}</ul>
+          )}
+        </section>
+      )}
+
       <section className="card">
         <Field label="הערות">{(a) => <textarea {...a} value={notes} onChange={(e) => setNotes(e.target.value)} />}</Field>
       </section>
@@ -254,5 +334,13 @@ function EditorForm(props: {
         <button className="btn" type="button" disabled={busy} onClick={tryIssue}>שמירה והמשך להפקה</button>
       </div>
     </form>
+    {newCustomerOpen && <NewCustomerDialog open onClose={() => setNewCustomerOpen(false)} requireAddress={docType === 'transaction_invoice'}
+      onCreated={(c) => {
+        setCustomers((cs) => [...cs.filter((x) => x.id !== c.id), c].sort((a, b) => a.name.localeCompare(b.name, 'he')));
+        changeCustomer(c.id);
+        setNewCustomerOpen(false);
+        toast(`הלקוח "${c.name}" נוסף ונבחר`, 'success');
+      }} />}
+    </>
   );
 }

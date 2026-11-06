@@ -2,7 +2,7 @@
 // browser ("computer") and an emulated Pixel 7 ("phone") with separate sessions.
 import { test, expect, devices, type Browser, type BrowserContext, type Page } from '@playwright/test';
 import { createClient } from '@supabase/supabase-js';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { networkInterfaces } from 'node:os';
 import { loadLiveTarget, type Account } from './env';
 
@@ -280,5 +280,20 @@ test('phone over the local network (plain http, not a secure context) can sign i
   await phone.getByLabel('מחיר ליחידה (₪)').fill('80');
   await phone.getByRole('button', { name: 'שמירת טיוטה' }).click();
   await expect(phone.getByText('זו טיוטה: אין לה מספר')).toBeVisible();
+
+  // A receipt photo: no Web Crypto here, so the file fingerprint uses the built-in fallback.
+  expect(await phone.evaluate(() => !!globalThis.crypto?.subtle)).toBe(false);
+  await phone.goto(base + '#/expenses/new');
+  await phone.getByLabel('ספק (חובה)').fill(`ספק ברשת המקומית ${RUN}`);
+  await phone.getByLabel('סכום ששולם (₪, חובה)').fill('12');
+  await phone.getByTestId('expense-file').setInputFiles({ name: 'lan.png', mimeType: 'image/png',
+    buffer: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64') });
+  await phone.getByRole('button', { name: 'שמירה' }).click();
+  await expect(phone.getByRole('heading', { level: 1 })).toHaveText('הוצאה');
+  const api = await ownerApi();
+  const saved = await api.from('expenses').select('attachments:expense_attachments(sha256)').eq('supplier', `ספק ברשת המקומית ${RUN}`).single();
+  const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64');
+  expect(saved.data!.attachments).toEqual([{ sha256: createHash('sha256').update(png).digest('hex') }]);
+  await api.auth.signOut({ scope: 'local' });
   await ctx.close();
 });

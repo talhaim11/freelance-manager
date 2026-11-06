@@ -6,7 +6,7 @@ import { errorCode, errorMessage } from '../domain/errors';
 import { navigate, useRoute } from '../router';
 import { DataState, Dialog, Field, Money, fmtDate, useAsync, useBusy, useToast } from '../ui/kit';
 import { StatusTag } from './Documents';
-import type { Customer, Doc, Profile } from '../data/types';
+import type { AllocationRecord, Customer, Doc, InvoiceBalance, Profile } from '../data/types';
 
 export function DocumentView({ id }: { id: string }) {
   const repo = useRepo();
@@ -15,20 +15,26 @@ export function DocumentView({ id }: { id: string }) {
     const doc = await repo.getDocument(id);
     const related = doc?.cancelled_by_document_id ? await repo.getDocument(doc.cancelled_by_document_id)
       : doc?.corrects_document_id ? await repo.getDocument(doc.corrects_document_id) : null;
-    const [profile, customers] = await Promise.all([repo.getProfile(), repo.listCustomers()]);
-    return { doc, related, profile, customers };
+    const [profile, customers, allocations, balances, docs] = await Promise.all([
+      repo.getProfile(), repo.listCustomers(),
+      doc ? repo.listAllocationsFor(doc.id) : Promise.resolve([] as AllocationRecord[]),
+      repo.listInvoiceBalances(), repo.listDocuments()]);
+    return { doc, related, profile, customers, allocations, balance: balances.find((b) => b.invoice_id === id) ?? null, docs };
   }, [repo, id]);
   return (
     <DataState state={state} retry={retry}>
-      {({ doc, related, profile, customers }) => doc
-        ? <View doc={doc} related={related} profile={profile} customers={customers} reload={retry} autoIssue={route.includes('issue=1')} />
+      {({ doc, related, profile, customers, allocations, balance, docs }) => doc
+        ? <View doc={doc} related={related} profile={profile} customers={customers} reload={retry} autoIssue={route.includes('issue=1')}
+            payments={{ allocations, balance, docs }} />
         : <div className="notice notice-error" role="alert">המסמך לא נמצא.</div>}
     </DataState>
   );
 }
 
-function View({ doc, related, profile, customers, reload, autoIssue }: {
-  doc: Doc; related: Doc | null; profile: Profile | null; customers: Customer[]; reload: () => void; autoIssue: boolean;
+interface Payments { allocations: AllocationRecord[]; balance: InvoiceBalance | null; docs: Doc[] }
+
+function View({ doc, related, profile, customers, reload, autoIssue, payments }: {
+  doc: Doc; related: Doc | null; profile: Profile | null; customers: Customer[]; reload: () => void; autoIssue: boolean; payments: Payments;
 }) {
   const repo = useRepo();
   const toast = useToast();
@@ -102,13 +108,17 @@ function View({ doc, related, profile, customers, reload, autoIssue }: {
             <button className="btn btn-danger" onClick={() => void removeDraft()} disabled={busy}>מחיקת טיוטה</button>
           </>}
           {!isDraft && <button className="btn btn-secondary" onClick={() => window.print()}>הדפסה / שמירה כ-PDF</button>}
+          {doc.doc_type === 'transaction_invoice' && doc.status === 'issued' && (payments.balance?.balance_agorot ?? 0) > 0 &&
+            <a className="btn" href={`#/documents/new?type=receipt&from=${doc.id}`}>₪ קבלה על תשלום</a>}
           {doc.status === 'issued' && doc.doc_type !== 'cancellation' &&
             <button className="btn btn-danger" onClick={() => { setError(null); setConfirmCancel(true); }}>ביטול באמצעות מסמך ביטול</button>}
           <a className="btn btn-secondary" href="#/documents">חזרה לרשימה</a>
         </div>
       </div>
 
-      <Paper doc={doc} related={related} profile={profile} customers={customers} />
+      <PaymentsPanel doc={doc} payments={payments} />
+
+      <Paper doc={doc} related={related} profile={profile} customers={customers} payments={payments} />
 
       <Dialog open={confirmIssue} title="להפיק את המסמך?" onClose={() => setConfirmIssue(false)}>
         <p>לאחר ההפקה יוקצה מספר רץ, והמסמך לא יהיה ניתן לעריכה או למחיקה. תיקון ייעשה רק במסמך ביטול.</p>
@@ -133,7 +143,42 @@ function View({ doc, related, profile, customers, reload, autoIssue }: {
   );
 }
 
-function Paper({ doc, related, profile, customers }: { doc: Doc; related: Doc | null; profile: Profile | null; customers: Customer[] }) {
+/** Paid / open amounts of an invoice, or what a receipt paid. Recorded allocations are immutable. */
+function PaymentsPanel({ doc, payments }: { doc: Doc; payments: Payments }) {
+  const byId = (id: string) => payments.docs.find((d) => d.id === id);
+  if (doc.doc_type === 'transaction_invoice' && doc.status !== 'draft') {
+    const live = payments.allocations.filter((a) => byId(a.receipt_id)?.status === 'issued');
+    return (
+      <section className="card no-print" aria-labelledby="pay-panel-h">
+        <h2 id="pay-panel-h">תשלומים</h2>
+        {payments.balance
+          ? <p data-testid="invoice-balance">סה"כ <Money agorot={payments.balance.total_agorot} /> · שולם <Money agorot={payments.balance.paid_agorot} /> · יתרה פתוחה <strong><Money agorot={payments.balance.balance_agorot} /></strong></p>
+          : <p className="muted">החשבונית בוטלה ואינה פתוחה לתשלום.</p>}
+        {live.length > 0 && <ul>{live.map((a) => { const r = byId(a.receipt_id)!; return (
+          <li key={a.receipt_id}><a href={`#/documents/${r.id}`}>קבלה מס' <span className="num">{r.number}</span></a> מיום <span className="num">{fmtDate(r.issue_date)}</span>: <Money agorot={a.amount_agorot} /></li>); })}</ul>}
+      </section>
+    );
+  }
+  if (doc.doc_type === 'receipt') {
+    const list = doc.status === 'draft' ? doc.allocations.map((a) => ({ receipt_id: doc.id, ...a })) : payments.allocations.filter((a) => a.receipt_id === doc.id);
+    const total = doc.total_agorot ?? exemptTotals(doc.lines).total;
+    const allocated = list.reduce((s, a) => s + a.amount_agorot, 0);
+    return (
+      <section className="card no-print" aria-labelledby="pay-panel-h">
+        <h2 id="pay-panel-h">{doc.status === 'draft' ? 'שיוך מתוכנן לחשבוניות' : 'שויך לחשבוניות'}</h2>
+        {list.length === 0 ? <p className="muted">התשלום אינו משויך לחשבונית.</p> : (
+          <ul>{list.map((a) => { const inv = byId(a.invoice_id); return (
+            <li key={a.invoice_id}><a href={`#/documents/${a.invoice_id}`}>חשבונית עסקה מס' <span className="num">{inv?.number ?? '?'}</span></a>: <Money agorot={a.amount_agorot} /></li>); })}</ul>
+        )}
+        <p data-testid="receipt-unallocated">לא משויך: <Money agorot={total - allocated} /></p>
+        {doc.status === 'cancelled' && <p className="muted">הקבלה בוטלה, ולכן התשלום כבר לא נספר בחשבוניות.</p>}
+      </section>
+    );
+  }
+  return null;
+}
+
+function Paper({ doc, related, profile, customers, payments }: { doc: Doc; related: Doc | null; profile: Profile | null; customers: Customer[]; payments: Payments }) {
   // Issued documents always render from their snapshots; drafts preview current details.
   const issuer = doc.issuer_snapshot ?? profile;
   const customer = doc.customer_snapshot ?? customers.find((c) => c.id === doc.customer_id) ?? null;
@@ -184,6 +229,10 @@ function Paper({ doc, related, profile, customers }: { doc: Doc; related: Doc | 
           {doc.payment_details.reference && <> · אסמכתה <span className="num">{doc.payment_details.reference}</span></>}
           {doc.payment_details.method === 'cheque' && <> · צ'ק <span className="num">{doc.payment_details.cheque_number}</span>, בנק {doc.payment_details.bank}, סניף <span className="num">{doc.payment_details.branch}</span>, לפירעון <span className="num">{fmtDate(doc.payment_details.due_date)}</span></>}
         </p>
+      )}
+      {doc.doc_type === 'receipt' && doc.status !== 'draft' && payments.allocations.some((a) => a.receipt_id === doc.id) && (
+        <p>על חשבון: {payments.allocations.filter((a) => a.receipt_id === doc.id).map((a, i) => (
+          <span key={a.invoice_id}>{i > 0 && ', '}חשבונית עסקה מס' <span className="num">{payments.docs.find((d) => d.id === a.invoice_id)?.number}</span> (<Money agorot={a.amount_agorot} />)</span>))}</p>
       )}
       {doc.notes && <p style={{ whiteSpace: 'pre-wrap' }}><bdi>{doc.notes}</bdi></p>}
       <footer className="muted" style={{ borderTop: '1px solid #ddd', paddingTop: 8, marginTop: 16, fontSize: '.85rem' }}>

@@ -64,7 +64,10 @@ npm run build && npm run check:secrets
 1. פרויקט חדש: אזור **Central EU (Frankfurt)**, סיסמת DB חזקה במנהל סיסמאות.
    כל אזור באירופה מתאים (גם West EU / Ireland). מומלץ להשאיר **לא מסומן** את "Automatically expose new tables":
    המיגרציה נותנת הרשאות במפורש (GRANT) ומפעילה RLS על כל הטבלאות, ונבדקה גם במצב הזה.
-2. **SQL Editor** → הדבקת כל `supabase/migrations/20261105000000_m1_foundation.sql` → Run.
+2. **SQL Editor** → להריץ את המיגרציות **לפי הסדר**, כל קובץ ב-New query נפרד → Run:
+   `supabase/migrations/20261105000000_m1_foundation.sql`, ואחריו `supabase/migrations/20261106000000_m2_payments_expenses.sql`.
+   המיגרציה של M2 מוסיפה בלבד (לא משנה ולא מוחקת נתונים קיימים), ויוצרת גם את דלי הקבצים הפרטי `expense-files`.
+   אחר כך: `supabase/checks/verify_access.sql` (קריאה בלבד) — כל 10 השורות צריכות להיות ✅.
 3. **Authentication → Sign In / Providers**: לכבות את **Allow new users to sign up**.
    ⚠️ **לא** לכבות את ספק ה-Email עצמו — זה חוסם גם כניסה. (בבדיקות מקומיות זו בדיוק הטעות שנתפסה.)
    באותו מסך, תחת Email: אורך סיסמה מינימלי 10 (מומלץ).
@@ -109,6 +112,12 @@ npm run test:live:local
 npm run supabase:stop
 ```
 הגדרות ה-Auth המקומיות (`supabase/config.toml`): הרשמה כבויה, סיסמה ≥ 10 עם אותיות וספרות.
+
+### 3.7 קבצים מצורפים (הוצאות)
+- הקבצים נשמרים בדלי **פרטי** `expense-files` ב-Supabase Storage, בתיקייה לפי מזהה המשתמש. אין קישור ציבורי;
+  צפייה היא דרך קישור חתום שתקף 5 דקות. משתמש אחר, משתמש לא מורשה או גולש אנונימי — לא יכולים לקרוא, להעלות או למחוק.
+- מקור שצורף אינו נמחק ואינו נדרס מהאפליקציה (תיעוד). תמונה או PDF בלבד, עד 10MB.
+- בתוכנית החינמית: 1GB אחסון קבצים. מספיק לפיתוח; לייצור צריך להחליט על תוכנית וגיבוי.
 
 ## 4. מה עדיין לא נעשה בכוונה
 - **אין פריסה.** כשתרצה: Netlify → Deploy Preview לענף (לא production), עם משתני הסביבה של 3.3 ב-Netlify UI.
