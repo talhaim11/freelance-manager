@@ -4,13 +4,15 @@
 | סביבה | Supabase | נתונים | שימוש |
 |---|---|---|---|
 | מקומית | `npm run supabase:start` (Docker) | סינתטיים | פיתוח ובדיקות |
-| פיתוח | `freelance-manager-dev` (Free) | סינתטיים + משתמשי בדיקה `fm-test-*@example.com` | בדיקות אוטומטיות וידניות |
-| ייצור | פרויקט **נפרד** (Free) | נתוני העסק בלבד. בלי משתמשי בדיקה ובלי נתוני פיתוח | האתר החי |
+| פיתוח | `freelance-manager-dev` (`eozageivndkbckoiwevv`, Free) | סינתטיים + משתמשי בדיקה `fm-test-*@example.com` | בדיקות אוטומטיות וידניות |
+| ייצור | `freelance-manager` (`pyvbplidbgtpnowguxgs`, Free, אירלנד) — פרויקט **נפרד** | נתוני העסק בלבד. בלי משתמשי בדיקה ובלי נתוני פיתוח | האתר החי |
 
 נתוני הפיתוח **לא** הופכים לנתוני הייצור. הייצור מתחיל ריק. הנתונים העסקיים נכנסים אליו רק דרך
 "ייבוא מהאפליקציה הקודמת" (עם המספרים המקוריים) או דרך שחזור מגיבוי.
 
 ## מבנה האתר (Netlify)
+אתר: `voluble-bublanina-4d0ad1` — https://voluble-bublanina-4d0ad1.netlify.app. נבנה אוטומטית מכל דחיפה ל-`main` ב-GitHub.
+
 - `/`: האפליקציה החדשה (`dist-app`, נבנית עם `npm run build:netlify`).
 - `/legacy/`: האפליקציה הקודמת, ללא שינוי בהתנהגות. היא נשארת זמינה כאפשרות חזרה, ובאותו מקור (origin),
   כך שהנתונים שהיא שמרה בדפדפן (localStorage) ו-Google Drive נשארים נגישים.
@@ -23,12 +25,21 @@
 | `VITE_SUPABASE_URL`, `VITE_SUPABASE_PUBLISHABLE_KEY` | בניית האתר | לא. ציבוריים מעצם הגדרתם, וההרשאות נאכפות ב-RLS. **אסור** מפתח secret/service_role, והאפליקציה מסרבת לעלות עם מפתח כזה |
 | `ANTHROPIC_API_KEY` | פונקציות בלבד | כן. מוגדר רק ב-Netlify ולעולם לא נכנס ל-Git |
 
+ב-Netlify: הקשר `production` מצביע לפרויקט הייצור; `deploy-preview` ו-`branch-deploy` מצביעים לפרויקט הפיתוח (עם תווית "פיתוח").
+
 ## הגדרת פרויקט Supabase (פיתוח או ייצור)
 1. הרצת המיגרציות לפי הסדר: `supabase/migrations/*.sql`.
 2. בדיקה: `supabase/checks/verify_access.sql`. כל השורות צריכות להיות ✅.
 3. Auth: הרשמה ציבורית כבויה (ספק Email נשאר פעיל), סיסמה של 10 תווים לפחות עם אותיות וספרות.
    ב-Site URL ובכתובות ההפניה מוגדרת כתובת האתר.
 4. הבעלים: משתמש עם הדוא״ל שלך, ברשימת המורשים. את הסיסמה קובעים דרך הקישור "שכחתי סיסמה", כך שאיש מלבדך לא רואה אותה.
+
+## בדיקות אחרי פריסה
+- `node scripts/prod-smoke.mjs pyvbplidbgtpnowguxgs https://voluble-bublanina-4d0ad1.netlify.app` — חשבון זמני נפרד, טיוטה בלבד,
+  מחיקה מלאה בסוף. אם ריצה נקטעה: להוסיף `--cleanup` בסוף הפקודה.
+- `FM_LIVE_ENV_FILE=.env.live.dev.local FM_LIVE_BASE_URL=<כתובת טיוטה>/ npx playwright test -c playwright.live.config.ts` — כל חבילת
+  הדפדפן מול פריסת טיוטה (`netlify deploy --alias ...`) שנבנתה עם פרויקט הפיתוח.
+- מיגרציות חדשות: `npx supabase db query --linked --project-ref <ref> -f <file>` ואחריה `verify_access.sql` (פיתוח קודם, ייצור אחר כך).
 
 ## גיבוי
 - **באפליקציה:** הגדרות ← גיבוי מלא. מורד קובץ ZIP עם כל הרשומות, טבלאות CSV, כל הקבצים, ודוח עם ספירות, סכומים ו-SHA-256.
@@ -40,7 +51,7 @@
 ## חזרה לאחור
 | מה | איך |
 |---|---|
-| האתר | ב-Netlify: Deploys ← הפריסה הקודמת ← "Publish deploy". או `git revert` של המיזוג והעלאה ל-`main` |
+| האתר | ב-Netlify: Deploys ← הפריסה `6a05b84ab729d4000827f044` (האפליקציה הקודמת, 14.5.2026) ← "Publish deploy". עותק מקומי: `freelance-manager-backups/netlify-voluble-bublanina-deploy-6a05b84ab729d4000827f044/`. או `git revert` והעלאה ל-`main` |
 | האפליקציה הקודמת | תמיד זמינה ב-`/legacy/`, עם אותם נתונים בדפדפן ו-Drive. התג `legacy-before-new-app` ב-Git מסמן את המצב הקודם של `main` |
 | הנתונים בייצור | שחזור מקובץ הגיבוי האחרון לפרויקט ריק. מקור נתוני האפליקציה הקודמת לא משתנה לעולם |
 | מיגרציות | כולן מוסיפות בלבד ולא מוחקות נתונים. חזרה לאחור = פריסה מחדש של הגרסה הקודמת. הטבלאות הנוספות לא מפריעות לה |
