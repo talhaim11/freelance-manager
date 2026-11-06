@@ -70,7 +70,7 @@ export function IncomePage() {
                   <thead><tr><th scope="col">שם</th><th scope="col">כתובת</th><th scope="col">יתרה פתוחה</th><th scope="col"><span className="sr-only">פעולות</span></th></tr></thead>
                   <tbody>{customers.map((c) => (
                     <tr key={c.id}>
-                      <td><bdi>{c.name}</bdi></td><td><bdi>{c.address}</bdi></td>
+                      <td><a href={`#/customers/${c.id}`}><bdi>{c.name}</bdi></a></td><td><bdi>{c.address}</bdi></td>
                       <td><Money agorot={byCustomer(c.id)} /></td>
                       <td><button className="btn btn-secondary" onClick={() => { setEditing(c.id); const { id: _id, ...rest } = c; setForm(rest); window.scrollTo(0, 0); }}>עריכה</button></td>
                     </tr>))}
@@ -108,7 +108,7 @@ function Debtors({ open, customers }: { open: InvoiceBalance[]; customers: { id:
           <thead><tr><th scope="col">לקוח</th><th scope="col">חשבונית</th><th scope="col">תאריך</th><th scope="col">שולם</th><th scope="col">יתרה</th><th scope="col"><span className="sr-only">פעולות</span></th></tr></thead>
           <tbody>{open.map((b) => (
             <tr key={b.invoice_id}>
-              <td><bdi>{name(b.customer_id)}</bdi></td>
+              <td><a href={`#/customers/${b.customer_id}`}><bdi>{name(b.customer_id)}</bdi></a></td>
               <td><a href={`#/documents/${b.invoice_id}`}>מס' <span className="num">{b.number}</span></a></td>
               <td className="num">{fmtDate(b.issue_date)}</td>
               <td><Money agorot={b.paid_agorot} /></td>

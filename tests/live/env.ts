@@ -12,6 +12,8 @@ export interface LiveTarget {
   /** Optional second allow-listed account, used to prove owners are isolated from each other. */
   owner2: Account | null;
   outsider: Account;
+  /** Empty allow-listed accounts for restore tests (each used once). */
+  restore: Account[];
 }
 
 function readEnvFile(path: string): Record<string, string> {
@@ -50,5 +52,6 @@ export function loadLiveTarget(): { target: LiveTarget | null; reason: string } 
   const owner = acct('FM_LIVE_OWNER');
   const outsider = acct('FM_LIVE_OUTSIDER');
   if (!owner || !outsider) return { target: null, reason: `owner/outsider test accounts missing in ${file}` };
-  return { target: { kind: kind as 'local' | 'dev', url, publishableKey: key, owner, owner2: acct('FM_LIVE_OWNER2'), outsider }, reason: '' };
+  const restore = [1, 2, 3, 4, 5, 6].map((i) => acct(`FM_LIVE_RESTORE_${i}`)).filter((a): a is Account => !!a);
+  return { target: { kind: kind as 'local' | 'dev', url, publishableKey: key, owner, owner2: acct('FM_LIVE_OWNER2'), outsider, restore }, reason: '' };
 }

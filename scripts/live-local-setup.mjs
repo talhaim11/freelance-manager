@@ -22,6 +22,10 @@ const accounts = {
   OWNER2: { email: 'fm-owner2@example.com', password: pw(), allowed: true },
   OUTSIDER: { email: 'fm-outsider@example.com', password: pw(), allowed: false },
 };
+// Empty allow-listed accounts that the restore tests consume one at a time (a restored account cannot be
+// emptied again: issued documents are immutable). Re-running this script adds fresh ones.
+const run = Date.now().toString(36);
+for (let i = 1; i <= 4; i++) accounts[`RESTORE_${i}`] = { email: `fm-restore-${run}-${i}@example.com`, password: pw(), allowed: true };
 
 const sb = createClient(url, admin, { auth: { persistSession: false, autoRefreshToken: false } });
 const { data: list, error: listErr } = await sb.auth.admin.listUsers({ perPage: 1000 });

@@ -1,3 +1,4 @@
+import { BackupPanel } from './Backup';
 import { useEffect, useState } from 'react';
 import { useRepo } from '../App';
 import { VAT_STATUS_LABEL, type VatStatus } from '../domain/classification';
@@ -92,10 +93,10 @@ export function SettingsPage() {
                   <button className="btn btn-danger" onClick={() => { if (window.confirm('לאפס את נתוני הדמו?')) { DemoRepo.reset(); window.location.reload(); } }}>איפוס נתוני דמו</button>
                 </>
               ) : (
-                <p>הנתונים נשמרים בבסיס הנתונים המשותף (Supabase), עם גישה לחשבון שלך בלבד. גיבוי וייצוא מלא יתווספו יחד עם המיגרציה.</p>
+                <p>הנתונים נשמרים בבסיס הנתונים המשותף (Supabase), עם גישה לחשבון שלך בלבד. גיבוי מלא, שחזור וייבוא — למטה.</p>
               )}
-              <p className="muted">שום מידע לא נשלח לספק AI בגרסה הזו.</p>
             </section>
+            <BackupPanel />
           </>
         )}
       </DataState>

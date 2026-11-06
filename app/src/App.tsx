@@ -12,6 +12,7 @@ import { AssistantPlaceholder as AssistantPage } from './pages/Simple';
 import { ExpenseEditor, ExpensesPage } from './pages/Expenses';
 import { TaxesPage } from './pages/Taxes';
 import { DocumentsPage } from './pages/Documents';
+import { CustomerPage } from './pages/Customer';
 import { DocumentEditor } from './pages/DocumentEditor';
 import { DocumentView } from './pages/DocumentView';
 import { SettingsPage } from './pages/Settings';
@@ -65,7 +66,9 @@ function Page({ route }: { route: string }) {
   if (exp) return <ExpenseEditor id={exp[1]} />;
   if (path === '/taxes') return <TaxesPage />;
   if (path === '/documents') return <DocumentsPage />;
-  if (path === '/documents/new') return <DocumentEditor key={route} initialType={params.get('type')} fromInvoice={params.get('from')} />;
+  if (path === '/documents/new') return <DocumentEditor key={route} initialType={params.get('type')} fromInvoice={params.get('from')} initialCustomer={params.get('customer')} />;
+  const cust = /^\/customers\/([\w-]+)$/.exec(path);
+  if (cust) return <CustomerPage id={cust[1]} />;
   const edit = /^\/documents\/([\w-]+)\/edit$/.exec(path);
   if (edit) return <DocumentEditor draftId={edit[1]} />;
   const view = /^\/documents\/([\w-]+)$/.exec(path);

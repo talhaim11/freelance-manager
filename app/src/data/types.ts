@@ -97,6 +97,7 @@ export interface Repo {
   listInvoiceBalances(): Promise<InvoiceBalance[]>;
   /** Recorded allocations where the document is the receipt or the invoice. */
   listAllocationsFor(documentId: string): Promise<AllocationRecord[]>;
+  listAllocations(): Promise<AllocationRecord[]>;
 
   listExpenses(): Promise<Expense[]>;
   /** Creates (idempotent by client_key) or updates an expense. */
@@ -105,7 +106,55 @@ export interface Repo {
   addExpenseAttachment(expenseId: string, file: AttachmentUpload): Promise<ExpenseAttachment>;
   /** Short-lived link to view a private attachment. */
   attachmentUrl(a: ExpenseAttachment): Promise<string>;
+  /** The original bytes of a private attachment (for backups). */
+  downloadAttachment(a: ExpenseAttachment): Promise<Uint8Array>;
+  /** Uploads a file to the account's private folder under a fixed id; returns its storage path. Retry-safe. */
+  uploadFile(id: string, bytes: Uint8Array, mime: string): Promise<string>;
+
+  /** Records a PDF/print of an issued document: the first is the original, later ones are copies. */
+  registerOutput(documentId: string, sha: { original: string; copy: string } | null): Promise<'original' | 'copy'>;
+  listOutputs(documentId?: string): Promise<DocumentOutput[]>;
+
+  getTaxProfile(): Promise<TaxProfile | null>;
+  saveTaxProfile(t: Omit<TaxProfile, 'updated_at'>): Promise<void>;
+  listSubmissions(): Promise<Submission[]>;
+  saveSubmission(s: SubmissionInput, id?: string): Promise<Submission>;
+
+  /** Imports a backup (mode restore, empty account only) or the previous app's data (mode legacy). One transaction. */
+  importRecords(payload: unknown, mode: 'restore' | 'legacy'): Promise<Record<string, number>>;
+  listAuditLog(): Promise<AuditEntry[]>;
 }
+
+export interface AuditEntry { action: string; entity: string; entity_id: string | null; details: Record<string, unknown>; at: string }
+export interface DocumentOutput { document_id: string; kind: 'original' | 'copy'; sha256: string | null; created_at: string }
+
+export type Tristate = 'unknown' | 'yes' | 'no';
+export interface TaxProfile {
+  income_tax_regime: 'unknown' | 'regular' | 'small_business';
+  employed: Tristate;
+  ni_self_employed: Tristate;
+  advances_book: Tristate;
+  onboarding_done: boolean;
+  updated_at?: string;
+}
+
+export type SubmissionKind = 'vat_exempt_declaration' | 'small_business_report' | 'annual_1301' | 'income_tax_advance' | 'national_insurance';
+export interface Submission {
+  id: string;
+  kind: SubmissionKind;
+  tax_year: number;
+  period: string;
+  status: 'prepared' | 'submitted' | 'accepted' | 'rejected';
+  reference: string;
+  submitted_on: string | null;
+  payment_status: 'not_due' | 'payment_pending' | 'paid';
+  payment_reference: string;
+  prepared_values: Record<string, unknown>;
+  attachment_path: string | null;
+  notes: string;
+  created_at: string;
+}
+export type SubmissionInput = Omit<Submission, 'id' | 'created_at'>;
 
 export interface Expense {
   id: string;

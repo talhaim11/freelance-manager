@@ -3,8 +3,8 @@ import type { VatStatusPeriod } from '../domain/classification';
 import { AppError, ERROR_MESSAGES } from '../domain/errors';
 import { fileExtension } from '../domain/expenses';
 import type {
-  AllocationRecord, AttachmentUpload, Customer, Doc, DraftInput, Expense, ExpenseAttachment, ExpenseInput,
-  InvoiceBalance, Profile, Repo, Series,
+  AllocationRecord, AttachmentUpload, AuditEntry, Customer, Doc, DocumentOutput, DraftInput, Expense, ExpenseAttachment, ExpenseInput,
+  InvoiceBalance, Profile, Repo, Series, Submission, SubmissionInput, TaxProfile,
 } from './types';
 
 const BUCKET = 'expense-files';
@@ -151,6 +151,11 @@ export class SupabaseRepo implements Repo {
       .or(`receipt_id.eq.${documentId},invoice_id.eq.${documentId}`)) as AllocationRecord[];
   }
 
+  async listAllocations() {
+    await this.authed();
+    return this.c(await this.sb.from('payment_allocations').select('receipt_id,invoice_id,amount_agorot').order('created_at')) as AllocationRecord[];
+  }
+
   async listExpenses() {
     await this.authed();
     return this.c(await this.sb.from('expenses').select(EXPENSE_COLS).order('doc_date', { ascending: false })) as Expense[];
@@ -166,13 +171,14 @@ export class SupabaseRepo implements Repo {
     this.c(await this.sb.from('expenses').upsert(e, { onConflict: 'client_key', ignoreDuplicates: true }));
     return this.c(await this.sb.from('expenses').select(EXPENSE_COLS).eq('client_key', e.client_key).single()) as Expense;
   }
-  async addExpenseAttachment(expenseId: string, f: AttachmentUpload) {
+  async uploadFile(id: string, bytes: Uint8Array, mime: string) {
     await this.authed();
-    const { data: u } = await this.sb.auth.getUser();
-    if (!u.user) throw this.expired(new AppError('SESSION_EXPIRED'));
-    const path = `${u.user.id}/${f.id}.${fileExtension(f.mime_type)}`;
-    // 1. The file, privately. An object already at this path is this same upload (retry after a lost response).
-    const up = await this.sb.storage.from(BUCKET).upload(path, f.bytes, { contentType: f.mime_type, upsert: false });
+    const { data: s } = await this.sb.auth.getSession();
+    const uid = s.session?.user.id;
+    if (!uid) throw this.expired(new AppError('SESSION_EXPIRED'));
+    const path = `${uid}/${id}.${fileExtension(mime)}`;
+    // An object already at this path is this same upload (retry after a lost response).
+    const up = await this.sb.storage.from(BUCKET).upload(path, bytes, { contentType: mime, upsert: false });
     if (up.error) {
       const status = Number((up.error as { statusCode?: string | number }).statusCode ?? (up.error as { status?: number }).status ?? 0);
       const dup = status === 409 || /already exists|duplicate/i.test(up.error.message);
@@ -182,7 +188,11 @@ export class SupabaseRepo implements Repo {
         : /mime|type/i.test(up.error.message) ? new AppError('FILE_TYPE_NOT_ALLOWED', up.error.message)
         : mapError({ message: up.error.message }, status));
     }
-    // 2. Its record. The id is fixed per selected file, so a repeat inserts nothing new.
+    return path;
+  }
+  async addExpenseAttachment(expenseId: string, f: AttachmentUpload) {
+    // 1. The file, privately. 2. Its record: the id is fixed per selected file, so a repeat inserts nothing new.
+    const path = await this.uploadFile(f.id, f.bytes, f.mime_type);
     const row = { id: f.id, expense_id: expenseId, storage_path: path, sha256: f.sha256, mime_type: f.mime_type,
       size_bytes: f.bytes.length, original_name: f.original_name };
     this.c(await this.sb.from('expense_attachments').upsert(row, { onConflict: 'id', ignoreDuplicates: true }));
@@ -193,5 +203,56 @@ export class SupabaseRepo implements Repo {
     const r = await this.sb.storage.from(BUCKET).createSignedUrl(a.storage_path, 300);
     if (r.error || !r.data) throw new AppError('NOT_FOUND', r.error?.message);
     return r.data.signedUrl;
+  }
+  async downloadAttachment(a: ExpenseAttachment) {
+    await this.authed();
+    const r = await this.sb.storage.from(BUCKET).download(a.storage_path);
+    if (r.error || !r.data) throw new AppError('NETWORK', r.error?.message);
+    return new Uint8Array(await r.data.arrayBuffer());
+  }
+
+  async registerOutput(documentId: string, sha: { original: string; copy: string } | null) {
+    await this.authed();
+    return this.c(await this.sb.rpc('register_document_output', { p_document_id: documentId, p_sha_original: sha?.original ?? null, p_sha_copy: sha?.copy ?? null })) as 'original' | 'copy';
+  }
+  async listOutputs(documentId?: string) {
+    await this.authed();
+    let q = this.sb.from('document_outputs').select('document_id,kind,sha256,created_at').order('created_at');
+    if (documentId) q = q.eq('document_id', documentId);
+    return this.c(await q) as DocumentOutput[];
+  }
+
+  async getTaxProfile() {
+    await this.authed();
+    return this.c(await this.sb.from('tax_profiles').select('income_tax_regime,employed,ni_self_employed,advances_book,onboarding_done,updated_at').maybeSingle()) as TaxProfile | null;
+  }
+  async saveTaxProfile(t: Omit<TaxProfile, 'updated_at'>) {
+    await this.authed();
+    const exists = this.c(await this.sb.from('tax_profiles').select('owner_id').maybeSingle());
+    if (exists) this.c(await this.sb.from('tax_profiles').update({ ...t, updated_at: new Date().toISOString() }).eq('owner_id', (exists as { owner_id: string }).owner_id));
+    else this.c(await this.sb.from('tax_profiles').insert(t));
+  }
+  async listSubmissions() {
+    await this.authed();
+    return this.c(await this.sb.from('submissions').select('*').order('tax_year', { ascending: false })) as Submission[];
+  }
+  async saveSubmission(sub: SubmissionInput, id?: string) {
+    await this.authed();
+    if (id) {
+      const { kind: _k, tax_year: _y, period: _p, ...rest } = sub;
+      const rows = this.c(await this.sb.from('submissions').update(rest).eq('id', id).select('*'));
+      if (!rows?.length) throw new AppError('NOT_FOUND');
+      return rows[0] as Submission;
+    }
+    return this.c(await this.sb.from('submissions').insert(sub).select('*').single()) as Submission;
+  }
+
+  async importRecords(payload: unknown, mode: 'restore' | 'legacy') {
+    await this.authed();
+    return this.c(await this.sb.rpc('import_records', { p: payload, p_mode: mode })) as Record<string, number>;
+  }
+  async listAuditLog() {
+    await this.authed();
+    return this.c(await this.sb.from('audit_log').select('action,entity,entity_id,details,at').order('at', { ascending: false }).limit(500)) as AuditEntry[];
   }
 }

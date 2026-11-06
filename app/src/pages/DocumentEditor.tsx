@@ -29,7 +29,7 @@ function toLines(forms: LineForm[]): { lines: DocLine[]; invalid: number[] } {
   return { lines, invalid };
 }
 
-export function DocumentEditor({ draftId, initialType, fromInvoice }: { draftId?: string; initialType?: string | null; fromInvoice?: string | null }) {
+export function DocumentEditor({ draftId, initialType, fromInvoice, initialCustomer }: { draftId?: string; initialType?: string | null; fromInvoice?: string | null; initialCustomer?: string | null }) {
   const repo = useRepo();
   const [state, retry] = useAsync(async () => {
     const [series, customers, vat, profile, draft, balances] = await Promise.all([
@@ -47,7 +47,7 @@ export function DocumentEditor({ draftId, initialType, fromInvoice }: { draftId?
           if (draftId && (!d.draft || d.draft.status !== 'draft')) {
             return <div className="notice notice-error" role="alert">{ERROR_MESSAGES.FINALIZED_DOCUMENT}</div>;
           }
-          return <EditorForm {...d} initialType={initialType} fromInvoice={fromInvoice} onSeriesAdded={retry} />;
+          return <EditorForm {...d} initialType={initialType} fromInvoice={fromInvoice} initialCustomer={initialCustomer} onSeriesAdded={retry} />;
         }}
       </DataState>
     </>
@@ -63,6 +63,7 @@ function EditorForm(props: {
   balances: InvoiceBalance[];
   initialType?: string | null;
   fromInvoice?: string | null;
+  initialCustomer?: string | null;
   onSeriesAdded: () => void;
 }) {
   const repo = useRepo();
@@ -83,7 +84,8 @@ function EditorForm(props: {
     draft?.doc_type ?? (source ? 'receipt' : allowedTypes.includes(props.initialType as DocType) ? (props.initialType as DocType) : 'transaction_invoice'));
   const seriesForType = props.series.filter((s) => s.doc_type === docType && !s.is_legacy);
   const [seriesId, setSeriesId] = useState(draft?.series_id ?? '');
-  const [customerId, setCustomerId] = useState(draft?.customer_id ?? source?.customer_id ?? '');
+  const [customerId, setCustomerId] = useState(draft?.customer_id ?? source?.customer_id
+    ?? (props.customers.some((c) => c.id === props.initialCustomer) ? props.initialCustomer! : ''));
   const [notes, setNotes] = useState(draft?.notes ?? '');
   const [payment, setPayment] = useState<PaymentDetails>(draft?.payment_details ?? {});
   const [lineForms, setLineForms] = useState<LineForm[]>(draft?.lines.length

@@ -14,14 +14,18 @@
     "test:e2e": "playwright test",
     "test:all": "npm run typecheck && vitest run && playwright test",
     "check:secrets": "node scripts/check-secrets.mjs",
-    "supabase:start": "supabase start -x logflare,vector,edge-runtime,imgproxy,supavisor,studio,postgres-meta",
+    "supabase:start": "supabase start -x logflare,vector,edge-runtime,imgproxy,supavisor,studio,postgres-meta,realtime",
     "supabase:stop": "supabase stop",
     "test:live:local:setup": "node scripts/live-local-setup.mjs",
     "test:live:local": "node scripts/run-live.mjs local",
     "test:live:dev": "node scripts/run-live.mjs dev"
   },
   "dependencies": {
+    "@pdf-lib/fontkit": "^1.1.1",
     "@supabase/supabase-js": "^2.45.4",
+    "bidi-js": "^1.0.3",
+    "jszip": "^3.10.1",
+    "pdf-lib": "^1.17.1",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },
@@ -34,6 +38,7 @@
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^4.3.4",
     "embedded-postgres": "^17.9.0-beta.17",
+    "pdfjs-dist": "^4.10.38",
     "pg": "^8.13.1",
     "supabase": "^2.122.1",
     "typescript": "^5.6.3",

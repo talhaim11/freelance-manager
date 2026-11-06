@@ -6,7 +6,8 @@ import { errorCode, errorMessage } from '../domain/errors';
 import { navigate, useRoute } from '../router';
 import { DataState, Dialog, Field, Money, fmtDate, useAsync, useBusy, useToast } from '../ui/kit';
 import { StatusTag } from './Documents';
-import type { AllocationRecord, Customer, Doc, InvoiceBalance, Profile } from '../data/types';
+import type { AllocationRecord, Customer, Doc, DocumentOutput, InvoiceBalance, Profile } from '../data/types';
+import { downloadBytes, producePdf } from '../lib/documentPdf';
 
 export function DocumentView({ id }: { id: string }) {
   const repo = useRepo();
@@ -15,17 +16,17 @@ export function DocumentView({ id }: { id: string }) {
     const doc = await repo.getDocument(id);
     const related = doc?.cancelled_by_document_id ? await repo.getDocument(doc.cancelled_by_document_id)
       : doc?.corrects_document_id ? await repo.getDocument(doc.corrects_document_id) : null;
-    const [profile, customers, allocations, balances, docs] = await Promise.all([
+    const [profile, customers, allocations, balances, docs, outputs] = await Promise.all([
       repo.getProfile(), repo.listCustomers(),
       doc ? repo.listAllocationsFor(doc.id) : Promise.resolve([] as AllocationRecord[]),
-      repo.listInvoiceBalances(), repo.listDocuments()]);
-    return { doc, related, profile, customers, allocations, balance: balances.find((b) => b.invoice_id === id) ?? null, docs };
+      repo.listInvoiceBalances(), repo.listDocuments(), doc ? repo.listOutputs(doc.id) : Promise.resolve([] as DocumentOutput[])]);
+    return { doc, related, profile, customers, allocations, balance: balances.find((b) => b.invoice_id === id) ?? null, docs, outputs };
   }, [repo, id]);
   return (
     <DataState state={state} retry={retry}>
-      {({ doc, related, profile, customers, allocations, balance, docs }) => doc
+      {({ doc, related, profile, customers, allocations, balance, docs, outputs }) => doc
         ? <View doc={doc} related={related} profile={profile} customers={customers} reload={retry} autoIssue={route.includes('issue=1')}
-            payments={{ allocations, balance, docs }} />
+            payments={{ allocations, balance, docs }} outputs={outputs} />
         : <div className="notice notice-error" role="alert">המסמך לא נמצא.</div>}
     </DataState>
   );
@@ -33,8 +34,8 @@ export function DocumentView({ id }: { id: string }) {
 
 interface Payments { allocations: AllocationRecord[]; balance: InvoiceBalance | null; docs: Doc[] }
 
-function View({ doc, related, profile, customers, reload, autoIssue, payments }: {
-  doc: Doc; related: Doc | null; profile: Profile | null; customers: Customer[]; reload: () => void; autoIssue: boolean; payments: Payments;
+function View({ doc, related, profile, customers, reload, autoIssue, payments, outputs }: {
+  doc: Doc; related: Doc | null; profile: Profile | null; customers: Customer[]; reload: () => void; autoIssue: boolean; payments: Payments; outputs: DocumentOutput[];
 }) {
   const repo = useRepo();
   const toast = useToast();
@@ -81,6 +82,21 @@ function View({ doc, related, profile, customers, reload, autoIssue, payments }:
     catch (e) { setError(errorMessage(e)); }
   });
 
+  const [printMark, setPrintMark] = useState<string | null>(null);
+  const pdf = (mode: 'download' | 'print') => run(async () => {
+    setError(null);
+    try {
+      const r = await producePdf(repo, { doc, related, profile, customers, allocations: payments.allocations, docs: payments.docs });
+      if (mode === 'download') {
+        downloadBytes(r.bytes, r.filename);
+        toast(r.marking === 'draft' ? 'הורד PDF של טיוטה (לא מסמך שהופק)' : r.marking === 'original' ? 'הורד המקור. הורדות נוספות יסומנו "העתק".' : 'הורד העתק נאמן למקור', 'success');
+      } else {
+        setPrintMark(r.marking === 'original' ? 'מקור' : r.marking === 'copy' ? 'העתק נאמן למקור' : 'טיוטה — לא הופק');
+        setTimeout(() => window.print(), 50);
+      }
+      reload();
+    } catch (e) { setError(errorMessage(e)); }
+  });
   const isDraft = doc.status === 'draft';
   return (
     <>
@@ -107,7 +123,8 @@ function View({ doc, related, profile, customers, reload, autoIssue, payments }:
             <a className="btn btn-secondary" href={`#/documents/${doc.id}/edit`}>עריכה</a>
             <button className="btn btn-danger" onClick={() => void removeDraft()} disabled={busy}>מחיקת טיוטה</button>
           </>}
-          {!isDraft && <button className="btn btn-secondary" onClick={() => window.print()}>הדפסה / שמירה כ-PDF</button>}
+          <button className="btn btn-secondary" disabled={busy} onClick={() => void pdf('download')}>⬇ הורדת PDF</button>
+          {!isDraft && <button className="btn btn-secondary" disabled={busy} onClick={() => void pdf('print')}>🖨 הדפסה</button>}
           {doc.doc_type === 'transaction_invoice' && doc.status === 'issued' && (payments.balance?.balance_agorot ?? 0) > 0 &&
             <a className="btn" href={`#/documents/new?type=receipt&from=${doc.id}`}>₪ קבלה על תשלום</a>}
           {doc.status === 'issued' && doc.doc_type !== 'cancellation' &&
@@ -116,9 +133,15 @@ function View({ doc, related, profile, customers, reload, autoIssue, payments }:
         </div>
       </div>
 
+      {!isDraft && (
+        <p className="muted no-print" data-testid="outputs-summary">
+          {outputs.length === 0 ? 'עדיין לא הופק PDF/הדפסה. הראשון יסומן "מקור", והבאים "העתק".'
+            : `הופקו ${outputs.length} עותקים: מקור ב-${fmtDate(outputs.find((o) => o.kind === 'original')?.created_at)}${outputs.length > 1 ? `, ועוד ${outputs.length - 1} העתקים` : ''}.`}
+        </p>
+      )}
       <PaymentsPanel doc={doc} payments={payments} />
 
-      <Paper doc={doc} related={related} profile={profile} customers={customers} payments={payments} />
+      <Paper doc={doc} related={related} profile={profile} customers={customers} payments={payments} printMark={printMark} />
 
       <Dialog open={confirmIssue} title="להפיק את המסמך?" onClose={() => setConfirmIssue(false)}>
         <p>לאחר ההפקה יוקצה מספר רץ, והמסמך לא יהיה ניתן לעריכה או למחיקה. תיקון ייעשה רק במסמך ביטול.</p>
@@ -178,7 +201,7 @@ function PaymentsPanel({ doc, payments }: { doc: Doc; payments: Payments }) {
   return null;
 }
 
-function Paper({ doc, related, profile, customers, payments }: { doc: Doc; related: Doc | null; profile: Profile | null; customers: Customer[]; payments: Payments }) {
+function Paper({ doc, related, profile, customers, payments, printMark }: { doc: Doc; related: Doc | null; profile: Profile | null; customers: Customer[]; payments: Payments; printMark: string | null }) {
   // Issued documents always render from their snapshots; drafts preview current details.
   const issuer = doc.issuer_snapshot ?? profile;
   const customer = doc.customer_snapshot ?? customers.find((c) => c.id === doc.customer_id) ?? null;
@@ -187,6 +210,7 @@ function Paper({ doc, related, profile, customers, payments }: { doc: Doc; relat
   return (
     <article className="doc-paper" aria-label="תצוגת המסמך">
       {doc.status === 'draft' && <div className="watermark">טיוטה — לא הופק</div>}
+      {printMark && <div className="print-only" style={{ border: '1.5px solid #111', padding: '2px 10px', fontWeight: 700, marginBottom: 8 }}>{printMark}</div>}
       {doc.status === 'cancelled' && <div className="watermark">בוטל{related ? ` — מסמך ביטול מס' ${related.number}` : ''}</div>}
       <header style={{ display: 'flex', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap', borderBottom: '2px solid #111', paddingBottom: 12, marginBottom: 16 }}>
         <div>

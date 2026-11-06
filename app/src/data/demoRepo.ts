@@ -8,7 +8,11 @@ import { vatStatusOn, type VatStatusPeriod } from '../domain/classification';
 import { exemptTotals, issueProblems } from '../domain/documents';
 import { allocationProblems, type AllocationRecord, type InvoiceBalance } from '../domain/payments';
 import { AppError } from '../domain/errors';
-import type { AttachmentUpload, Customer, Doc, DraftInput, Expense, ExpenseAttachment, ExpenseInput, Profile, Repo, Series } from './types';
+import type {
+  AttachmentUpload, AuditEntry, Customer, Doc, DocumentOutput, DraftInput, Expense, ExpenseAttachment, ExpenseInput, Profile, Repo, Series,
+  Submission, SubmissionInput, TaxProfile,
+} from './types';
+import type { BackupPayload } from '../domain/backup';
 
 const KEY = 'fm_demo_v1';
 /** Demo attachment bytes, kept apart from the records (base64 by attachment id). */
@@ -24,6 +28,9 @@ interface DemoState {
   allocations?: (AllocationRecord & { id: string })[];
   expenses?: Expense[];
   customerKeys?: Record<string, string>;
+  outputs?: DocumentOutput[];
+  taxProfile?: TaxProfile | null;
+  submissions?: Submission[];
   audit: { action: string; entity_id: string; at: string; details: unknown }[];
 }
 
@@ -62,6 +69,9 @@ export class DemoRepo implements Repo {
     this.state.allocations ??= [];
     this.state.expenses ??= [];
     this.state.customerKeys ??= {};
+    this.state.outputs ??= [];
+    this.state.taxProfile ??= null;
+    this.state.submissions ??= [];
     this.state.docs.forEach((d) => { d.allocations ??= []; });
     this.save();
   }
@@ -221,6 +231,10 @@ export class DemoRepo implements Repo {
       .map(({ receipt_id, invoice_id, amount_agorot }) => ({ receipt_id, invoice_id, amount_agorot })));
   }
 
+  async listAllocations() {
+    return this.clone(this.state.allocations!.map(({ receipt_id, invoice_id, amount_agorot }) => ({ receipt_id, invoice_id, amount_agorot })));
+  }
+
   async listExpenses() { return this.clone([...this.state.expenses!].sort((a, b) => (a.doc_date < b.doc_date ? 1 : -1))); }
   async saveExpense(e: ExpenseInput, id?: string) {
     return this.exclusive(() => {
@@ -256,9 +270,102 @@ export class DemoRepo implements Repo {
     });
   }
   async attachmentUrl(a: ExpenseAttachment) {
+    return `data:${a.mime_type};base64,${this.fileB64(a.storage_path.replace(/^demo\//, ''))}`;
+  }
+  private fileB64(id: string): string {
     const files = JSON.parse(this.storage?.getItem(FILES_KEY) ?? '{}');
-    const b64 = files[a.id];
-    if (!b64) throw new AppError('NOT_FOUND');
-    return `data:${a.mime_type};base64,${b64}`;
+    if (!files[id]) throw new AppError('NOT_FOUND');
+    return files[id];
+  }
+  async downloadAttachment(a: ExpenseAttachment) {
+    const bin = atob(this.fileB64(a.storage_path.replace(/^demo\//, '')));
+    return Uint8Array.from(bin, (c) => c.charCodeAt(0));
+  }
+  async uploadFile(id: string, bytes: Uint8Array, _mime: string) {
+    if (bytes.length > DEMO_MAX_FILE) throw new AppError('FILE_TOO_LARGE', 'demo limit 1MB');
+    let bin = '';
+    bytes.forEach((b) => { bin += String.fromCharCode(b); });
+    try {
+      const files = JSON.parse(this.storage?.getItem(FILES_KEY) ?? '{}');
+      files[id] = btoa(bin);
+      this.storage?.setItem(FILES_KEY, JSON.stringify(files));
+    } catch { throw new AppError('FILE_TOO_LARGE', 'demo storage full'); }
+    return `demo/${id}`;
+  }
+
+  async registerOutput(documentId: string, sha: { original: string; copy: string } | null) {
+    return this.exclusive(() => {
+      const d = this.state.docs.find((x) => x.id === documentId);
+      if (!d) throw new AppError('NOT_FOUND');
+      if (d.status === 'draft') throw new AppError('NOT_ISSUED');
+      const kind: 'original' | 'copy' = this.state.outputs!.some((o) => o.document_id === documentId && o.kind === 'original') ? 'copy' : 'original';
+      this.state.outputs!.push({ document_id: documentId, kind, sha256: sha ? sha[kind] : null, created_at: new Date().toISOString() });
+      this.save();
+      return kind;
+    });
+  }
+  async listOutputs(documentId?: string) {
+    return this.clone(this.state.outputs!.filter((o) => !documentId || o.document_id === documentId));
+  }
+
+  async getTaxProfile() { return this.clone(this.state.taxProfile ?? null); }
+  async saveTaxProfile(t: Omit<TaxProfile, 'updated_at'>) {
+    await this.exclusive(() => { this.state.taxProfile = { ...t, updated_at: new Date().toISOString() }; this.save(); });
+  }
+  async listSubmissions() { return this.clone(this.state.submissions!); }
+  async saveSubmission(sub: SubmissionInput, id?: string) {
+    return this.exclusive(() => {
+      if (sub.status !== 'prepared' && !sub.reference.trim()) throw new AppError('REFERENCE_REQUIRED');
+      if (sub.payment_status === 'paid' && !sub.payment_reference.trim()) throw new AppError('REFERENCE_REQUIRED');
+      if (id) {
+        const x = this.state.submissions!.find((y) => y.id === id);
+        if (!x) throw new AppError('NOT_FOUND');
+        Object.assign(x, { ...sub, kind: x.kind, tax_year: x.tax_year, period: x.period });
+        this.save(); return this.clone(x);
+      }
+      if (this.state.submissions!.some((y) => y.kind === sub.kind && y.tax_year === sub.tax_year && y.period === sub.period)) throw new AppError('DUPLICATE');
+      const n: Submission = { ...sub, id: uuid(), created_at: new Date().toISOString() };
+      this.state.submissions!.push(n); this.save(); return this.clone(n);
+    });
+  }
+
+  async importRecords(payload: unknown, mode: 'restore' | 'legacy') {
+    return this.exclusive(() => {
+      const p = payload as BackupPayload;
+      if (p?.format !== 'freelance-manager-backup' || p.version !== 1) throw new AppError('IMPORT_INVALID');
+      const st = this.state;
+      if (mode === 'restore' && (st.customers.length || st.docs.length || st.expenses!.length || st.series.length)) throw new AppError('IMPORT_TARGET_NOT_EMPTY');
+      if (mode === 'legacy' && st.series.some((x) => x.is_legacy)) throw new AppError('IMPORT_ALREADY_DONE');
+      if (mode === 'legacy' && (p.series.some((x) => !x.is_legacy) || p.documents.some((d) => d.doc_type !== 'transaction_invoice'))) throw new AppError('IMPORT_INVALID');
+      const m = new Map<string, string>();
+      const map = (id: string | null | undefined) => (id ? m.get(id) ?? null : null);
+      if (p.profile && !st.profile?.legal_name) st.profile = { ...p.profile };
+      if (!st.vat.length) st.vat = p.vat_periods.map((v) => ({ ...v, id: uuid() }));
+      if (mode === 'restore' && p.tax_profile && !st.taxProfile) st.taxProfile = { ...p.tax_profile };
+      for (const c of p.customers) { const id = uuid(); m.set(c.id, id); st.customers.push({ ...c, id }); }
+      for (const x of p.series) { const id = uuid(); m.set(x.id, id); st.series.push({ ...x, id }); }
+      for (const d of p.documents) m.set(d.id, uuid());
+      for (const d of p.documents) {
+        st.docs.push({ ...d, id: m.get(d.id)!, idempotency_key: uuid(), series_id: map(d.series_id)!, customer_id: map(d.customer_id),
+          corrects_document_id: map(d.corrects_document_id), cancelled_by_document_id: map(d.cancelled_by_document_id),
+          allocations: d.status === 'draft' ? (d.allocations ?? []).filter((a) => m.has(a.invoice_id)).map((a) => ({ ...a, invoice_id: m.get(a.invoice_id)! })) : [] });
+      }
+      for (const a of p.allocations) st.allocations!.push({ id: uuid(), receipt_id: map(a.receipt_id)!, invoice_id: map(a.invoice_id)!, amount_agorot: a.amount_agorot });
+      for (const e of p.expenses) {
+        const id = uuid(); m.set(e.id, id);
+        const atts = p.attachments.filter((a) => a.expense_id === e.id).map((a) => ({ ...a, expense_id: id }));
+        st.expenses!.push({ ...e, id, client_key: uuid(), attachments: atts });
+      }
+      if (mode === 'restore') for (const x of p.submissions ?? []) st.submissions!.push({ ...x, id: uuid() });
+      const counts = { customers: p.customers.length, series: p.series.length, documents: p.documents.length, allocations: p.allocations.length,
+        expenses: p.expenses.length, attachments: p.attachments.length, submissions: mode === 'restore' ? (p.submissions ?? []).length : 0 };
+      st.audit.push({ action: mode === 'restore' ? 'backup.restored' : 'legacy.imported', entity_id: '', at: new Date().toISOString(), details: counts });
+      this.save();
+      return counts;
+    });
+  }
+  async listAuditLog(): Promise<AuditEntry[]> {
+    return this.clone([...this.state.audit].reverse().map((a) => ({ action: a.action, entity: 'document', entity_id: a.entity_id || null,
+      details: (a.details ?? {}) as Record<string, unknown>, at: a.at })));
   }
 }
