@@ -9,7 +9,7 @@ import { createClient } from '@supabase/supabase-js';
 
 const ref = process.argv[2];
 if (!/^[a-z0-9]{20}$/.test(ref ?? '')) throw new Error('usage: node scripts/hosted-test-accounts.mjs <dev-project-ref>');
-const keys = JSON.parse(execFileSync('npx', ['supabase', 'projects', 'api-keys', '--project-ref', ref, '-o', 'json'],
+const keys = JSON.parse(execFileSync('npx', ['supabase', 'projects', 'api-keys', '--project-ref', ref, '--reveal', '-o', 'json'],
   { encoding: 'utf8', shell: true, stdio: ['ignore', 'pipe', 'ignore'] }));
 const pick = (pred) => keys.find(pred)?.api_key;
 const secret = pick((k) => k.type === 'secret') ?? pick((k) => k.name === 'service_role');
